@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create reports directory
 RUN mkdir -p reports
 
-EXPOSE 8080
+ENV PORT=8080
+EXPOSE ${PORT}
 
-CMD ["uvicorn", "keyword_report.web:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD uvicorn keyword_report.web:app --host 0.0.0.0 --port $PORT
