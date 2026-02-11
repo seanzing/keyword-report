@@ -10,12 +10,12 @@ RUN pip install --no-cache-dir .
 # Let Playwright install Firefox + its exact system deps
 RUN playwright install --with-deps firefox
 
-# WeasyPrint system deps (Cairo/Pango)
+# WeasyPrint system deps (Cairo/Pango) — use libgdk-pixbuf-2.0-0 for Trixie compat
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
-    libgdk-pixbuf2.0-0 \
+    libgdk-pixbuf-2.0-0 \
     libffi-dev \
     shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
