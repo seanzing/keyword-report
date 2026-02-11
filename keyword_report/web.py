@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -68,7 +69,8 @@ async def generate(url: str):
             )
 
             yield _sse("progress", "Generating PDF...")
-            filename = f"{uuid.uuid4().hex[:8]}.pdf"
+            slug = re.sub(r"[^a-z0-9]+", "", business_name.lower())
+            filename = f"{slug}_keyword_report.pdf"
             output_path = REPORTS_DIR / filename
 
             await asyncio.to_thread(
