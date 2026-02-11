@@ -15,65 +15,83 @@ load_dotenv()
 HAIKU_MODEL = "claude-3-5-haiku-20241022"
 
 
-def extract_business_info(pages: list[ScrapedPage]) -> dict[str, str]:
+def extract_business_info(pages: list[ScrapedPage]) -> dict:
     """
-    Extract business name, industry, and location from scraped pages using Haiku.
+    Extract business name, industry, location, services, and service area
+    from scraped pages using Haiku.
 
-    Sends homepage content (title + h1 + first 2000 chars of text) to Haiku
-    for minimal extraction.
+    Sends content from ALL pages (not just homepage) so we catch service area
+    info that's often on about/contact/locations pages.
 
     Returns:
-        {"business_name": str, "industry": str, "location": str}
+        {
+            "business_name": str,
+            "industry": str,
+            "location": str,
+            "services": list[str],
+            "service_area_cities": list[str],
+        }
     """
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set.")
 
-    # Build homepage content from first page
-    homepage = pages[0] if pages else None
-    if not homepage:
+    if not pages:
         raise ValueError("No pages scraped — cannot extract business info.")
 
+    # Build content from ALL pages, not just homepage
     content_parts = []
-    if homepage.title:
-        content_parts.append(f"Title: {homepage.title}")
-    if homepage.h1:
-        content_parts.append(f"H1: {homepage.h1}")
-    if homepage.meta_description:
-        content_parts.append(f"Meta Description: {homepage.meta_description}")
-    if homepage.text_content:
-        content_parts.append(f"Page Content:\n{homepage.text_content[:2000]}")
+    for i, page in enumerate(pages[:5]):
+        label = "HOMEPAGE" if i == 0 else f"PAGE {i + 1} ({page.url})"
+        parts = [f"\n--- {label} ---"]
+        if page.title:
+            parts.append(f"Title: {page.title}")
+        if page.h1:
+            parts.append(f"H1: {page.h1}")
+        if page.meta_description:
+            parts.append(f"Meta Description: {page.meta_description}")
+        if page.text_content:
+            parts.append(f"Content:\n{page.text_content[:1500]}")
+        content_parts.append("\n".join(parts))
 
     page_content = "\n".join(content_parts)
 
     client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.create(
         model=HAIKU_MODEL,
-        max_tokens=256,
+        max_tokens=512,
         system=(
             "You are analyzing a LOCAL SERVICE BUSINESS website. These are businesses "
             "like plumbers, painters, roofers, electricians, etc. that serve customers "
             "in a specific geographic area.\n\n"
-            "Extract the business name, industry, location, and key services.\n"
-            "Respond with JSON only, no other text.\n\n"
-            'Format: {"business_name": "...", "industry": "...", "location": "...", "services": [...]}\n\n'
-            "INDUSTRY must be one of these exact values:\n"
-            "  plumbing, hvac, roofing, electrical, painting, landscaping, cleaning, pest_control\n"
-            "If it doesn't match, use a short descriptor like 'garage_door' or 'fencing'.\n"
-            "IMPORTANT: These are SERVICE businesses. A painting company means house/commercial "
-            "painting, NOT art. A cleaning company means house/office cleaning, NOT dry cleaning.\n\n"
-            "SERVICES: list the top 3-5 specific services offered (e.g., for a painter: "
-            '"interior painting", "exterior painting", "cabinet painting", "deck staining").\n\n'
-            "LOCATION: City, ST format (e.g., Denver, CO). Use the primary/headquarters city."
+            "Extract the following. Respond with JSON only, no other text.\n\n"
+            "Format:\n"
+            "{\n"
+            '  "business_name": "...",\n'
+            '  "industry": "...",\n'
+            '  "location": "City, ST",\n'
+            '  "services": ["service1", "service2", ...],\n'
+            '  "service_area_cities": ["City1", "City2", ...]\n'
+            "}\n\n"
+            "INDUSTRY must be one of: plumbing, hvac, roofing, electrical, painting, "
+            "landscaping, cleaning, pest_control. If none fit, use a short descriptor.\n"
+            "IMPORTANT: These are SERVICE businesses. Painting = house painting, NOT art.\n\n"
+            "SERVICES: List 3-5 specific services (e.g., interior painting, deck staining).\n\n"
+            "LOCATION: Primary city in City, ST format (e.g., Castle Rock, CO).\n\n"
+            "SERVICE_AREA_CITIES: List ALL cities/towns mentioned on the site that this "
+            "business serves. Look for 'Areas We Serve', 'Service Areas', city names in "
+            "page URLs, location pages, etc. Include nearby major cities and suburbs. "
+            "If the site doesn't list specific cities, infer 5-8 nearby cities/suburbs "
+            "based on the primary location. These should be real cities within reasonable "
+            "driving distance. Return at least 5 cities."
         ),
         messages=[{"role": "user", "content": page_content}],
     )
 
-    # Parse response
     text = response.content[0].text.strip()
 
-    # Try to extract JSON from response
-    json_match = re.search(r"\{[^}]+\}", text)
+    # Extract JSON — handle nested arrays/objects
+    json_match = re.search(r"\{.*\}", text, re.DOTALL)
     if json_match:
         text = json_match.group()
 
@@ -84,6 +102,7 @@ def extract_business_info(pages: list[ScrapedPage]) -> dict[str, str]:
         "industry": result.get("industry", "service"),
         "location": result.get("location", "Unknown"),
         "services": result.get("services", []),
+        "service_area_cities": result.get("service_area_cities", []),
     }
 
 
@@ -100,7 +119,6 @@ def check_keyword_presence(
     Returns:
         [{"keyword": str, "monthly_searches": int, "on_old_site": bool}, ...]
     """
-    # Build combined site text
     parts: list[str] = []
     for page in pages:
         if page.title:

@@ -48,6 +48,7 @@ async def generate(url: str):
             industry = business_info["industry"]
             location = business_info["location"]
             services = business_info.get("services", [])
+            service_area_cities = business_info.get("service_area_cities", [])
 
             yield _sse(
                 "progress",
@@ -55,7 +56,7 @@ async def generate(url: str):
             )
 
             yield _sse("progress", "Fetching keyword data...")
-            keyword_data = await get_keywords(industry, location, services)
+            keyword_data = await get_keywords(industry, location, services, service_area_cities)
 
             if not keyword_data:
                 yield _sse("error", "No keyword data returned. Check DataForSEO credentials.")

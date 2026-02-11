@@ -52,10 +52,11 @@ async def generate_keyword_report(
     industry = business_info["industry"]
     location = business_info["location"]
     services = business_info.get("services", [])
+    service_area_cities = business_info.get("service_area_cities", [])
 
     # Step 3: Get keywords from DataForSEO
     _progress("Fetching keywords...")
-    keyword_data = await get_keywords(industry, location, services)
+    keyword_data = await get_keywords(industry, location, services, service_area_cities)
 
     if not keyword_data:
         raise RuntimeError(
