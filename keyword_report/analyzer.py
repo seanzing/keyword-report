@@ -51,14 +51,20 @@ def extract_business_info(pages: list[ScrapedPage]) -> dict[str, str]:
         model=HAIKU_MODEL,
         max_tokens=256,
         system=(
-            "Extract the business name, industry, and primary city/state location "
-            "from this website content. Respond with JSON only, no other text.\n\n"
-            'Format: {"business_name": "...", "industry": "...", "location": "..."}\n\n'
-            "For industry, use a single lowercase word like: plumbing, hvac, roofing, "
-            "electrical, painting, landscaping, cleaning, pest_control. If it doesn't "
-            "match a common trade, use your best short description.\n\n"
-            "For location, use the format: City, ST (e.g., Denver, CO). If the business "
-            "serves multiple areas, use the primary/headquarters city."
+            "You are analyzing a LOCAL SERVICE BUSINESS website. These are businesses "
+            "like plumbers, painters, roofers, electricians, etc. that serve customers "
+            "in a specific geographic area.\n\n"
+            "Extract the business name, industry, location, and key services.\n"
+            "Respond with JSON only, no other text.\n\n"
+            'Format: {"business_name": "...", "industry": "...", "location": "...", "services": [...]}\n\n'
+            "INDUSTRY must be one of these exact values:\n"
+            "  plumbing, hvac, roofing, electrical, painting, landscaping, cleaning, pest_control\n"
+            "If it doesn't match, use a short descriptor like 'garage_door' or 'fencing'.\n"
+            "IMPORTANT: These are SERVICE businesses. A painting company means house/commercial "
+            "painting, NOT art. A cleaning company means house/office cleaning, NOT dry cleaning.\n\n"
+            "SERVICES: list the top 3-5 specific services offered (e.g., for a painter: "
+            '"interior painting", "exterior painting", "cabinet painting", "deck staining").\n\n'
+            "LOCATION: City, ST format (e.g., Denver, CO). Use the primary/headquarters city."
         ),
         messages=[{"role": "user", "content": page_content}],
     )
@@ -77,6 +83,7 @@ def extract_business_info(pages: list[ScrapedPage]) -> dict[str, str]:
         "business_name": result.get("business_name", "Unknown Business"),
         "industry": result.get("industry", "service"),
         "location": result.get("location", "Unknown"),
+        "services": result.get("services", []),
     }
 
 
