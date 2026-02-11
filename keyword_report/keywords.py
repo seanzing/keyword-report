@@ -300,14 +300,19 @@ def _parse_and_rank(
                 continue
             all_keywords.append((keyword, volume))
 
-    # Filter: remove brands and irrelevant keywords
+    # Filter: remove brands, irrelevant keywords, and case duplicates
+    seen_lower: set[str] = set()
     filtered = []
     for kw, vol in all_keywords:
+        kw_lower = kw.lower()
+        if kw_lower in seen_lower:
+            continue
+        seen_lower.add(kw_lower)
         if _is_blocked_brand(kw):
             continue
         if not _is_service_relevant(kw, industry, services):
             continue
-        filtered.append((kw, vol))
+        filtered.append((kw_lower, vol))
 
     # Separate into location-specific and generic
     local_keywords = [(kw, vol) for kw, vol in filtered if city in kw.lower()]
