@@ -11,8 +11,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from .scraper import scrape_site
-from .analyzer import extract_business_info, check_keyword_presence
-from .keywords import get_keywords
+from .analyzer import extract_business_info
+from .keywords import (
+    get_keywords,
+    get_ranked_keywords,
+    check_ranking_for_keywords,
+    build_city_list,
+    _extract_domain,
+)
 from .report import generate_report_pdf
 
 load_dotenv()
@@ -56,16 +62,25 @@ async def generate(url: str):
                 f"Found: {business_name} ({industry} in {location})",
             )
 
-            yield _sse("progress", "Fetching keyword data...")
-            keyword_data = await get_keywords(industry, location, services, service_area_cities)
+            yield _sse("progress", "Fetching keywords and ranking data...")
+            domain = _extract_domain(url)
+            all_cities = build_city_list(location, service_area_cities)
+
+            keyword_data, ranked_keywords = await asyncio.gather(
+                get_keywords(industry, location, services, service_area_cities),
+                get_ranked_keywords(domain, location),
+            )
 
             if not keyword_data:
                 yield _sse("error", "No keyword data returned. Check DataForSEO credentials.")
                 return
 
-            yield _sse("progress", f"Got {len(keyword_data)} keywords. Checking old site...")
-            keyword_results = await asyncio.to_thread(
-                check_keyword_presence, keyword_data, site.pages
+            yield _sse(
+                "progress",
+                f"Got {len(keyword_data)} keywords. Cross-referencing against {len(ranked_keywords)} ranked keywords...",
+            )
+            keyword_results = check_ranking_for_keywords(
+                keyword_data, ranked_keywords, all_cities
             )
 
             yield _sse("progress", "Generating PDF...")

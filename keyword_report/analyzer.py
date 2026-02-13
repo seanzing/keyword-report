@@ -111,10 +111,14 @@ def check_keyword_presence(
     pages: list[ScrapedPage],
 ) -> list[dict]:
     """
-    Check whether each keyword appears on the scraped site.
+    DEPRECATED: Use keywords.check_ranking_for_keywords() instead.
 
-    Combines all page text_content + title + meta_description + h1 into one
-    lowercase string, then checks for case-insensitive exact phrase match.
+    This function checks for keyword text presence on scraped pages, which
+    doesn't reflect actual Google rankings. A keyword can appear on a page
+    without the site ranking for it, or the site can rank for keywords not
+    literally on the page.
+
+    Kept for backward compatibility only.
 
     Returns:
         [{"keyword": str, "monthly_searches": int, "on_old_site": bool}, ...]

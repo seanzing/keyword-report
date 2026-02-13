@@ -5,8 +5,14 @@ import re
 from pathlib import Path
 
 from .scraper import scrape_site, ScrapedSite
-from .analyzer import extract_business_info, check_keyword_presence
-from .keywords import get_keywords
+from .analyzer import extract_business_info
+from .keywords import (
+    get_keywords,
+    get_ranked_keywords,
+    check_ranking_for_keywords,
+    build_city_list,
+    _extract_domain,
+)
 from .report import generate_report_pdf
 
 
@@ -54,18 +60,24 @@ async def generate_keyword_report(
     services = business_info.get("services", [])
     service_area_cities = business_info.get("service_area_cities", [])
 
-    # Step 3: Get keywords from DataForSEO
-    _progress("Fetching keywords...")
-    keyword_data = await get_keywords(industry, location, services, service_area_cities)
+    # Step 3: Fetch opportunity keywords + ranked keywords in parallel
+    _progress("Fetching keywords and ranking data...")
+    domain = _extract_domain(url)
+    all_cities = build_city_list(location, service_area_cities)
+
+    keyword_data, ranked_keywords = await asyncio.gather(
+        get_keywords(industry, location, services, service_area_cities),
+        get_ranked_keywords(domain, location),
+    )
 
     if not keyword_data:
         raise RuntimeError(
             f"No keywords returned from DataForSEO for industry={industry}, location={location}"
         )
 
-    # Step 4: Check keyword presence on old site
-    _progress("Checking keyword presence...")
-    keyword_results = check_keyword_presence(keyword_data, site.pages)
+    # Step 4: Cross-reference opportunity keywords against actual rankings
+    _progress(f"Cross-referencing against {len(ranked_keywords)} ranked keywords...")
+    keyword_results = check_ranking_for_keywords(keyword_data, ranked_keywords, all_cities)
 
     # Step 5: Generate PDF
     _progress("Generating PDF...")

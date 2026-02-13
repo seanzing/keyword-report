@@ -82,6 +82,35 @@ class KeywordData:
     monthly_searches: int
 
 
+@dataclass
+class RankedKeywordData:
+    keyword: str
+    search_volume: int
+    rank_position: int
+    serp_type: str  # "organic", "paid", etc.
+
+
+def _extract_domain(url: str) -> str:
+    """Strip protocol, www., and path from a URL to get bare domain.
+
+    >>> _extract_domain("https://www.example.com/about")
+    'example.com'
+    """
+    domain = re.sub(r"^https?://", "", url)
+    domain = re.sub(r"^www\.", "", domain)
+    domain = domain.split("/")[0].split("?")[0]
+    return domain.lower()
+
+
+def build_city_list(location: str, service_area_cities: list[str] | None) -> list[str]:
+    """Build a combined city list from primary location and service area cities."""
+    primary_city = _extract_city(location)
+    all_cities = [primary_city]
+    if service_area_cities:
+        all_cities.extend(c for c in service_area_cities if c not in all_cities)
+    return all_cities
+
+
 def _extract_city(location: str) -> str:
     """Extract just the city name from 'City, ST' format."""
     return location.split(",")[0].strip()
@@ -409,3 +438,116 @@ def get_keywords_sync(
 ) -> list[KeywordData]:
     """Synchronous wrapper for get_keywords."""
     return asyncio.run(get_keywords(industry, location, services, service_area_cities))
+
+
+# ---------------------------------------------------------------------------
+# Ranked Keywords — actual SERP ranking data for a domain
+# ---------------------------------------------------------------------------
+
+async def get_ranked_keywords(
+    domain: str,
+    location: str,
+) -> list[RankedKeywordData]:
+    """
+    Fetch keywords that a domain actually ranks for in Google.
+
+    Uses DataForSEO's Ranked Keywords endpoint. Non-fatal: returns [] on any
+    failure so the report pipeline can continue (all Old Site marks become X).
+    """
+    login = os.getenv("DATAFORSEO_LOGIN")
+    password = os.getenv("DATAFORSEO_PASSWORD")
+    if not login or not password:
+        return []
+
+    target_location = _detect_location(location)
+    bare_domain = _extract_domain(domain) if "://" in domain else domain
+
+    credentials = f"{login}:{password}"
+    auth = f"Basic {base64.b64encode(credentials.encode()).decode()}"
+
+    endpoint = "https://api.dataforseo.com/v3/dataforseo_labs/google/ranked_keywords/live"
+    payload = [
+        {
+            "target": bare_domain,
+            "location_name": target_location,
+            "language_name": "English",
+            "order_by": ["keyword_data.keyword_info.search_volume,desc"],
+            "limit": 1000,
+        }
+    ]
+    headers = {
+        "Authorization": auth,
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(endpoint, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+        return _parse_ranked_keywords(data)
+    except Exception:
+        return []
+
+
+def _parse_ranked_keywords(response: dict[str, Any]) -> list[RankedKeywordData]:
+    """Parse the Ranked Keywords API response."""
+    results: list[RankedKeywordData] = []
+    for task in response.get("tasks", []):
+        for result in task.get("result", []) or []:
+            for item in result.get("items", []) or []:
+                keyword_data = item.get("keyword_data", {})
+                keyword = keyword_data.get("keyword", "")
+                keyword_info = keyword_data.get("keyword_info", {})
+                volume = keyword_info.get("search_volume", 0)
+
+                serp_elem = item.get("ranked_serp_element", {})
+                serp_item = serp_elem.get("serp_item", {})
+                rank = serp_item.get("rank_group", 0)
+                serp_type = serp_item.get("type", "organic")
+
+                if keyword:
+                    results.append(RankedKeywordData(
+                        keyword=keyword,
+                        search_volume=volume or 0,
+                        rank_position=rank or 0,
+                        serp_type=serp_type,
+                    ))
+    return results
+
+
+def check_ranking_for_keywords(
+    opportunity_keywords: list[KeywordData],
+    ranked_keywords: list[RankedKeywordData],
+    all_cities: list[str],
+) -> list[dict]:
+    """
+    Determine Old Site check/X marks by cross-referencing opportunity keywords
+    against the domain's actual Google rankings.
+
+    Uses intent normalization (strips city names, sorts words) for fuzzy
+    matching, plus an exact-string fallback.
+
+    Returns:
+        [{"keyword": str, "monthly_searches": int, "on_old_site": bool}, ...]
+    """
+    # Build sets for fast lookup
+    ranked_raw = {rk.keyword.lower() for rk in ranked_keywords}
+    ranked_intents = {
+        _normalize_service_intent(rk.keyword, all_cities) for rk in ranked_keywords
+    }
+
+    results = []
+    for kw in opportunity_keywords:
+        kw_lower = kw.keyword.lower()
+        kw_intent = _normalize_service_intent(kw.keyword, all_cities)
+
+        on_old_site = kw_intent in ranked_intents or kw_lower in ranked_raw
+
+        results.append({
+            "keyword": kw.keyword,
+            "monthly_searches": kw.monthly_searches,
+            "on_old_site": on_old_site,
+        })
+
+    return results
