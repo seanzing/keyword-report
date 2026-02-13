@@ -305,6 +305,36 @@ INDEX_HTML = """\
 
   .download-btn:hover { background: #3dbdb5; }
 
+  .share-input-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+  }
+
+  .share-url-input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 8px;
+    background: rgba(255,255,255,0.1);
+    color: white;
+    font-size: 13px;
+  }
+
+  .copy-btn {
+    padding: 8px 16px;
+    background: rgba(255,255,255,0.15);
+    color: white;
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .copy-btn:hover { background: rgba(255,255,255,0.25); }
+
   /* Error */
   .error-msg {
     margin-top: 16px;
@@ -347,6 +377,13 @@ INDEX_HTML = """\
       <h2 id="result-title"></h2>
       <div class="result-stats" id="result-stats"></div>
       <a class="download-btn" id="download-link" href="#">Download PDF</a>
+      <div class="share-row" id="share-row" style="display:none;">
+        <label style="color:rgba(255,255,255,0.6);font-size:12px;margin-top:16px;display:block;">Shareable Link</label>
+        <div class="share-input-row">
+          <input type="text" id="share-url" readonly class="share-url-input">
+          <button type="button" id="copy-btn" class="copy-btn">Copy</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -399,7 +436,12 @@ form.addEventListener('submit', (e) => {
       data.total_impressions.toLocaleString() + '/mo potential impressions \u00b7 ' +
       data.old_site_keywords + ' keywords on old site \u00b7 ' +
       data.new_site_keywords + ' on new site';
-    document.getElementById('download-link').href = '/reports/' + data.filename;
+    const reportPath = '/reports/' + data.filename;
+    document.getElementById('download-link').href = reportPath;
+
+    const shareUrl = window.location.origin + reportPath;
+    document.getElementById('share-url').value = shareUrl;
+    document.getElementById('share-row').style.display = 'block';
 
     resultEl.style.display = 'block';
     btn.disabled = false;
@@ -418,6 +460,15 @@ form.addEventListener('submit', (e) => {
     errorEl.style.display = 'block';
     btn.disabled = false;
     btn.textContent = 'Generate';
+  });
+});
+
+document.getElementById('copy-btn').addEventListener('click', () => {
+  const input = document.getElementById('share-url');
+  navigator.clipboard.writeText(input.value).then(() => {
+    const btn = document.getElementById('copy-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 2000);
   });
 });
 </script>
