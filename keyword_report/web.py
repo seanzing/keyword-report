@@ -25,8 +25,8 @@ load_dotenv()
 
 app = FastAPI(title="Keyword Report Generator")
 
-REPORTS_DIR = Path("reports")
-REPORTS_DIR.mkdir(exist_ok=True)
+REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "/app/reports"))
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @app.get("/", response_class=HTMLResponse)
