@@ -122,14 +122,66 @@ def generate_report_pdf(
     .container {{
         max-width: 780px;
         margin: 0 auto;
-        padding: 20px 0;
+        padding: 0;
     }}
 
-    .card {{
+    /* Top teal gradient bar */
+    .top-bar {{
+        height: 5px;
+        background: linear-gradient(90deg, #4ecdc4, #3dbdb5);
+        border-radius: 3px 3px 0 0;
+    }}
+
+    /* Header section */
+    .header {{
+        padding: 40px 40px 0 40px;
+    }}
+
+    .prepared-for {{
+        font-size: 12px;
+        font-weight: 700;
+        color: #1a1a2e;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+    }}
+
+    .business-name {{
+        font-size: 32px;
+        font-weight: 700;
+        color: #1a1a2e;
+        margin-bottom: 4px;
+    }}
+
+    .report-subtitle {{
+        font-size: 15px;
+        font-weight: 400;
+        color: #9ca3af;
+        margin-bottom: 32px;
+    }}
+
+    /* Intro block with teal left border */
+    .intro-block {{
+        border-left: 4px solid #4ecdc4;
+        padding: 20px 24px;
+        margin: 0 40px 40px 40px;
         background: white;
-        border-radius: 12px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 4px 12px rgba(0,0,0,0.04);
-        padding: 40px;
+    }}
+
+    .intro-block p {{
+        font-size: 15px;
+        line-height: 1.7;
+        color: #374151;
+        margin-bottom: 12px;
+    }}
+
+    .intro-block p:last-child {{
+        margin-bottom: 0;
+    }}
+
+    /* Keywords section */
+    .keywords-section {{
+        padding: 0 40px;
     }}
 
     .card-heading {{
@@ -260,7 +312,7 @@ def generate_report_pdf(
     .banner {{
         background: linear-gradient(135deg, #1a1a2e 0%, #2a2a4e 100%);
         border-radius: 12px;
-        margin-top: 30px;
+        margin: 30px 40px 0 40px;
         padding: 32px 40px;
         text-align: center;
     }}
@@ -278,13 +330,25 @@ def generate_report_pdf(
         color: rgba(255,255,255,0.85);
         line-height: 1.6;
         max-width: 580px;
-        margin: 0 auto;
+        margin: 0 auto 20px auto;
+    }}
+
+    .pricing-pill {{
+        display: inline-block;
+        border: 2px solid #4ecdc4;
+        color: #4ecdc4;
+        font-size: 14px;
+        font-weight: 700;
+        padding: 10px 28px;
+        border-radius: 30px;
     }}
 
     /* Footer */
     .footer {{
         text-align: center;
-        margin-top: 20px;
+        margin: 24px 40px 0 40px;
+        padding-top: 16px;
+        border-top: 1px solid #e8eaed;
         font-size: 12px;
         color: #9ca3af;
     }}
@@ -292,7 +356,28 @@ def generate_report_pdf(
 </head>
 <body>
 <div class="container">
-    <div class="card">
+    <div class="top-bar"></div>
+
+    <div class="header">
+        <div class="prepared-for">Prepared For</div>
+        <div class="business-name">{business_name}</div>
+        <div class="report-subtitle">Local SEO Opportunity Report</div>
+    </div>
+
+    <div class="intro-block">
+        <p>
+            This example report has been created <strong>specifically for your business</strong>.
+            It shows the keywords your customers are already searching for &mdash; and whether
+            they're finding you.
+        </p>
+        <p>
+            At ZING, we build your new website along with <strong>50 local landing pages</strong>
+            so you rank in more places and get more impressions. That means more people in your
+            area see your business when they search &mdash; and more of them get in touch.
+        </p>
+    </div>
+
+    <div class="keywords-section">
         <div class="card-heading">Your Keywords</div>
         <div class="card-subtitle">These are the search terms your customers use to find {industry_plural} in your area</div>
 
@@ -308,7 +393,7 @@ def generate_report_pdf(
             <tbody>
                 {keyword_rows}
                 <tr class="total-row">
-                    <td class="total-label">Total (showing {new_site_count} of 50 keywords)</td>
+                    <td class="total-label">Total</td>
                     <td class="total-impressions"><span class="pill-total">{_format_number(total_impressions)}/mo</span></td>
                     <td class="total-check">{old_total_display}</td>
                     <td class="total-check"><span class="total-new">{new_site_count}</span></td>
@@ -324,6 +409,7 @@ def generate_report_pdf(
             in thousands more local searches every month. More visibility means more enquiries,
             and more enquiries means more jobs.
         </div>
+        <span class="pricing-pill">$59/mo &middot; No contract &middot; Cancel anytime</span>
     </div>
 
     <div class="footer">
