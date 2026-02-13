@@ -172,57 +172,75 @@ def generate_seed_keywords(
     return unique[:20]
 
 
+_INTL_MAPPINGS = {
+    "australia": "Australia",
+    "sydney": "Australia",
+    "melbourne": "Australia",
+    "brisbane": "Australia",
+    "perth": "Australia",
+    "adelaide": "Australia",
+    "uk": "United Kingdom",
+    "united kingdom": "United Kingdom",
+    "london": "United Kingdom",
+    "england": "United Kingdom",
+    "canada": "Canada",
+    "toronto": "Canada",
+    "vancouver": "Canada",
+    "new zealand": "New Zealand",
+    "auckland": "New Zealand",
+}
+
+_US_STATES = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+    "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+    "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
+    "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
+    "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
+    "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
+    "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
+    "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+    "WI": "Wisconsin", "WY": "Wyoming",
+}
+
+
 def _detect_location(location: str) -> str:
     """
     Detect the best DataForSEO location_name.
 
     Uses state-level for US (e.g., "Colorado,United States").
+    Used by the Keywords for Keywords endpoint which supports state-level.
     """
     location_lower = location.lower()
 
-    intl_mappings = {
-        "australia": "Australia",
-        "sydney": "Australia",
-        "melbourne": "Australia",
-        "brisbane": "Australia",
-        "perth": "Australia",
-        "adelaide": "Australia",
-        "uk": "United Kingdom",
-        "united kingdom": "United Kingdom",
-        "london": "United Kingdom",
-        "england": "United Kingdom",
-        "canada": "Canada",
-        "toronto": "Canada",
-        "vancouver": "Canada",
-        "new zealand": "New Zealand",
-        "auckland": "New Zealand",
-    }
-
-    for keyword, country in intl_mappings.items():
+    for keyword, country in _INTL_MAPPINGS.items():
         if keyword in location_lower:
             return country
-
-    us_states = {
-        "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
-        "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
-        "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
-        "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
-        "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
-        "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
-        "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
-        "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
-        "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
-        "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
-        "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
-        "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
-        "WI": "Wisconsin", "WY": "Wyoming",
-    }
 
     match = re.search(r",\s*([A-Z]{2})\b", location)
     if match:
         abbrev = match.group(1)
-        if abbrev in us_states:
-            return f"{us_states[abbrev]},United States"
+        if abbrev in _US_STATES:
+            return f"{_US_STATES[abbrev]},United States"
+
+    return "United States"
+
+
+def _detect_country(location: str) -> str:
+    """
+    Detect the country-level DataForSEO location_name.
+
+    The Ranked Keywords endpoint only accepts country-level locations
+    (e.g., "United States"), not state-level (e.g., "Colorado,United States").
+    """
+    location_lower = location.lower()
+
+    for keyword, country in _INTL_MAPPINGS.items():
+        if keyword in location_lower:
+            return country
 
     return "United States"
 
@@ -459,7 +477,7 @@ async def get_ranked_keywords(
     if not login or not password:
         return []
 
-    target_location = _detect_location(location)
+    target_country = _detect_country(location)
     bare_domain = _extract_domain(domain) if "://" in domain else domain
 
     credentials = f"{login}:{password}"
@@ -469,7 +487,7 @@ async def get_ranked_keywords(
     payload = [
         {
             "target": bare_domain,
-            "location_name": target_location,
+            "location_name": target_country,
             "language_name": "English",
             "order_by": ["keyword_data.keyword_info.search_volume,desc"],
             "limit": 1000,
