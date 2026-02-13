@@ -516,6 +516,55 @@ def _parse_ranked_keywords(response: dict[str, Any]) -> list[RankedKeywordData]:
     return results
 
 
+def _stem_service_word(word: str) -> str:
+    """Reduce a word to its root for fuzzy cross-referencing.
+
+    Handles the common service-industry suffixes so that word-form variants
+    match: painter/painting/painters → paint, electrician/electrical → electric.
+
+    Only used for ranking cross-reference — NOT for the keyword dedup pipeline,
+    where we want "house painter" and "house painting" to stay distinct.
+
+    >>> _stem_service_word("painters")
+    'paint'
+    >>> _stem_service_word("plumbing")
+    'plumb'
+    >>> _stem_service_word("electricians")
+    'electric'
+    >>> _stem_service_word("water")
+    'water'
+    """
+    if len(word) <= 4:
+        return word
+    # Longer suffixes first to avoid partial matches.
+    # No "ical" — it over-strips "electrical" → "electr"; "al" alone gives "electric".
+    # Min root length 4 protects short nouns (water, sewer) from false stemming.
+    for suffix in ("ians", "ers", "ing", "ors", "ian", "er", "or", "al", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+            return word[: -len(suffix)]
+    return word
+
+
+def _normalize_for_ranking_match(keyword: str, known_cities: list[str]) -> str:
+    """Aggressively normalize a keyword for ranking cross-reference.
+
+    Like _normalize_service_intent but also stems each word so that
+    "house painting castle rock" and "house painters castle rock" both
+    reduce to the same root form.
+    """
+    kw = keyword.lower()
+
+    for city in known_cities:
+        kw = kw.replace(city.lower(), "")
+
+    kw = re.sub(r"\b[a-z]{2}\b$", "", kw)
+    kw = re.sub(r"\bco\b", "", kw)
+    kw = re.sub(r"\bin\b", "", kw)
+
+    words = sorted(_stem_service_word(w) for w in kw.split() if w)
+    return " ".join(words)
+
+
 def check_ranking_for_keywords(
     opportunity_keywords: list[KeywordData],
     ranked_keywords: list[RankedKeywordData],
@@ -525,24 +574,24 @@ def check_ranking_for_keywords(
     Determine Old Site check/X marks by cross-referencing opportunity keywords
     against the domain's actual Google rankings.
 
-    Uses intent normalization (strips city names, sorts words) for fuzzy
-    matching, plus an exact-string fallback.
+    Uses stemmed intent normalization (strips city names, stems words, sorts)
+    for fuzzy matching, plus an exact-string fallback.
 
     Returns:
         [{"keyword": str, "monthly_searches": int, "on_old_site": bool}, ...]
     """
     # Build sets for fast lookup
     ranked_raw = {rk.keyword.lower() for rk in ranked_keywords}
-    ranked_intents = {
-        _normalize_service_intent(rk.keyword, all_cities) for rk in ranked_keywords
+    ranked_stemmed = {
+        _normalize_for_ranking_match(rk.keyword, all_cities) for rk in ranked_keywords
     }
 
     results = []
     for kw in opportunity_keywords:
         kw_lower = kw.keyword.lower()
-        kw_intent = _normalize_service_intent(kw.keyword, all_cities)
+        kw_stemmed = _normalize_for_ranking_match(kw.keyword, all_cities)
 
-        on_old_site = kw_intent in ranked_intents or kw_lower in ranked_raw
+        on_old_site = kw_stemmed in ranked_stemmed or kw_lower in ranked_raw
 
         results.append({
             "keyword": kw.keyword,
