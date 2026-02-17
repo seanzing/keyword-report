@@ -34,7 +34,7 @@ class ScrapedSite:
     pages: list[ScrapedPage] = field(default_factory=list)
 
 
-# Priority patterns for local service business pages
+# Priority patterns — covers local service, storefront, e-commerce, SaaS, professional
 PRIORITY_PATTERNS = [
     r"/services?",
     r"/about",
@@ -44,6 +44,13 @@ PRIORITY_PATTERNS = [
     r"/team",
     r"/testimonials?",
     r"/reviews?",
+    r"/products?",
+    r"/menu",
+    r"/practice-areas?",
+    r"/specialties",
+    r"/pricing",
+    r"/features?",
+    r"/blog",
 ]
 
 

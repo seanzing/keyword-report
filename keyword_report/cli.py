@@ -17,7 +17,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         prog="keyword-report",
-        description="Generate a keyword opportunity PDF for a local service business website.",
+        description="Generate a keyword opportunity PDF for any business website.",
     )
     parser.add_argument(
         "--url",

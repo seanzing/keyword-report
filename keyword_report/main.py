@@ -4,7 +4,7 @@ import asyncio
 import re
 from pathlib import Path
 
-from .scraper import scrape_site, ScrapedSite
+from .scraper import scrape_site
 from .analyzer import extract_business_info
 from .keywords import (
     get_keywords,
@@ -26,9 +26,9 @@ async def generate_keyword_report(
 
     Steps:
         1. Scrape site (5 pages max)
-        2. Extract business info via Haiku
+        2. Extract business info via Haiku -> BusinessProfile
         3. Get 10 keywords from DataForSEO
-        4. Check each keyword against scraped content
+        4. Check each keyword against actual rankings
         5. Generate PDF
 
     Args:
@@ -50,29 +50,23 @@ async def generate_keyword_report(
     if not site.pages:
         raise RuntimeError(f"Could not scrape any pages from {url}")
 
-    # Step 2: Extract business info
+    # Step 2: Extract business info -> BusinessProfile
     _progress("Analyzing business...")
-    business_info = extract_business_info(site.pages)
-
-    business_name = business_info["business_name"]
-    industry = business_info["industry"]
-    location = business_info["location"]
-    services = business_info.get("services", [])
-    service_area_cities = business_info.get("service_area_cities", [])
+    profile = extract_business_info(site.pages)
 
     # Step 3: Fetch opportunity keywords + ranked keywords in parallel
     _progress("Fetching keywords and ranking data...")
     domain = _extract_domain(url)
-    all_cities = build_city_list(location, service_area_cities)
+    all_cities = build_city_list(profile)
 
     keyword_data, ranked_keywords = await asyncio.gather(
-        get_keywords(industry, location, services, service_area_cities),
-        get_ranked_keywords(domain, location),
+        get_keywords(profile),
+        get_ranked_keywords(domain, profile.location),
     )
 
     if not keyword_data:
         raise RuntimeError(
-            f"No keywords returned from DataForSEO for industry={industry}, location={location}"
+            f"No keywords returned from DataForSEO for industry={profile.industry}, location={profile.location}"
         )
 
     # Step 4: Cross-reference opportunity keywords against actual rankings
@@ -82,12 +76,11 @@ async def generate_keyword_report(
     # Step 5: Generate PDF
     _progress("Generating PDF...")
     if output_path is None:
-        slug = re.sub(r"[^a-z0-9]+", "_", business_name.lower()).strip("_")
+        slug = re.sub(r"[^a-z0-9]+", "_", profile.business_name.lower()).strip("_")
         output_path = Path(f"keyword_report_{slug}.pdf")
 
     pdf_path = generate_report_pdf(
-        business_name=business_name,
-        industry=industry,
+        profile=profile,
         keywords=keyword_results,
         output_path=output_path,
     )

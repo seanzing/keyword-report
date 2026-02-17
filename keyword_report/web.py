@@ -48,27 +48,22 @@ async def generate(url: str):
                 return
 
             yield _sse("progress", "Analyzing business...")
-            business_info = await asyncio.to_thread(
+            profile = await asyncio.to_thread(
                 extract_business_info, site.pages
             )
-            business_name = business_info["business_name"]
-            industry = business_info["industry"]
-            location = business_info["location"]
-            services = business_info.get("services", [])
-            service_area_cities = business_info.get("service_area_cities", [])
 
             yield _sse(
                 "progress",
-                f"Found: {business_name} ({industry} in {location})",
+                f"Found: {profile.business_name} ({profile.industry} — {profile.business_model})",
             )
 
             yield _sse("progress", "Fetching keywords and ranking data...")
             domain = _extract_domain(url)
-            all_cities = build_city_list(location, service_area_cities)
+            all_cities = build_city_list(profile)
 
             keyword_data, ranked_keywords = await asyncio.gather(
-                get_keywords(industry, location, services, service_area_cities),
-                get_ranked_keywords(domain, location),
+                get_keywords(profile),
+                get_ranked_keywords(domain, profile.location),
             )
 
             if not keyword_data:
@@ -84,14 +79,13 @@ async def generate(url: str):
             )
 
             yield _sse("progress", "Generating PDF...")
-            slug = re.sub(r"[^a-z0-9]+", "", business_name.lower())
+            slug = re.sub(r"[^a-z0-9]+", "", profile.business_name.lower())
             filename = f"{slug}_keyword_report.pdf"
             output_path = REPORTS_DIR / filename
 
             await asyncio.to_thread(
                 generate_report_pdf,
-                business_name,
-                industry,
+                profile,
                 keyword_results,
                 output_path,
             )
@@ -101,7 +95,7 @@ async def generate(url: str):
 
             yield _sse(
                 "complete",
-                f'{{"filename":"{filename}","business_name":"{business_name}",'
+                f'{{"filename":"{filename}","business_name":"{profile.business_name}",'
                 f'"total_impressions":{total},"old_site_keywords":{old_count},'
                 f'"new_site_keywords":{len(keyword_results)}}}',
             )

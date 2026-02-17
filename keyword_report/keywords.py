@@ -1,10 +1,9 @@
-"""DataForSEO client for keyword research — tuned for local service businesses.
+"""DataForSEO client for keyword research — works for any business type.
 
-Strategy (matching IdealReport.jpeg):
-- Seeds spread across service area cities, not just the home city
-- Each result keyword should ideally be a different {service} + {city} combo
-- Semantic dedup prevents "house painting castle rock" / "castle rock house painting"
-- Brand blocklist, service relevance filter
+Strategy:
+- Seeds come from BusinessProfile (AI-generated per-business)
+- For local businesses: city diversity, service relevance, semantic dedup
+- For non-local businesses: relevance filter, dedup, top 10 by volume
 """
 
 import asyncio
@@ -17,62 +16,16 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 
+from .models import BusinessProfile
+
 load_dotenv()
 
-# Service terms per industry — diverse set for varied results
-INDUSTRY_SEEDS = {
-    "plumbing": [
-        "plumber", "plumbing services", "drain cleaning",
-        "water heater repair", "leak repair", "emergency plumber",
-        "pipe repair", "sewer repair", "toilet repair",
-    ],
-    "hvac": [
-        "hvac repair", "air conditioning repair", "ac repair",
-        "furnace repair", "heating repair", "ac installation",
-        "hvac company", "heat pump installation", "duct cleaning",
-    ],
-    "roofing": [
-        "roofing contractor", "roof repair", "roofer",
-        "roof replacement", "roof inspection", "roof leak repair",
-        "shingle repair", "metal roofing", "emergency roof repair",
-    ],
-    "electrical": [
-        "electrician", "electrical contractor", "electrical repair",
-        "outlet installation", "lighting installation",
-        "panel upgrade", "emergency electrician", "wiring repair",
-    ],
-    "painting": [
-        "painter", "house painter", "painting contractor",
-        "interior painting", "exterior painting", "house painting",
-        "residential painter", "commercial painter",
-        "cabinet painting", "deck staining",
-    ],
-    "landscaping": [
-        "landscaping company", "landscaper", "lawn care service",
-        "tree trimming", "tree removal", "landscape design",
-        "lawn mowing service", "irrigation installation",
-    ],
-    "cleaning": [
-        "house cleaning service", "cleaning service", "maid service",
-        "deep cleaning", "office cleaning", "commercial cleaning",
-        "carpet cleaning", "move out cleaning",
-    ],
-    "pest_control": [
-        "pest control", "exterminator", "termite treatment",
-        "bed bug treatment", "rodent control", "ant exterminator",
-        "mosquito control", "wildlife removal",
-    ],
-}
-
-BRAND_BLOCKLIST = [
-    "benjamin moore", "sherwin williams", "sherwin-williams", "behr",
-    "valspar", "ppg", "dulux", "farrow", "rust-oleum", "rustoleum",
+# Universal aggregator/platform blocklist — merged with profile.brand_blocklist
+UNIVERSAL_BLOCKLIST = [
+    "yelp", "angi", "angie", "thumbtack", "nextdoor", "houzz",
     "home depot", "lowes", "lowe's", "menards", "ace hardware",
-    "angi", "angie", "thumbtack", "yelp", "houzz", "nextdoor",
-    "trane", "carrier", "lennox", "goodman", "rheem", "daikin",
-    "kohler", "moen", "delta faucet",
-    "scotts", "trugreen", "john deere",
-    "orkin", "terminix", "rentokil",
+    "amazon", "walmart", "target", "ebay", "etsy",
+    "wikipedia", "reddit", "quora",
 ]
 
 
@@ -102,12 +55,14 @@ def _extract_domain(url: str) -> str:
     return domain.lower()
 
 
-def build_city_list(location: str, service_area_cities: list[str] | None) -> list[str]:
+def build_city_list(profile: BusinessProfile) -> list[str]:
     """Build a combined city list from primary location and service area cities."""
-    primary_city = _extract_city(location)
+    if not profile.is_local or not profile.location:
+        return []
+    primary_city = _extract_city(profile.location)
     all_cities = [primary_city]
-    if service_area_cities:
-        all_cities.extend(c for c in service_area_cities if c not in all_cities)
+    if profile.service_area_cities:
+        all_cities.extend(c for c in profile.service_area_cities if c not in all_cities)
     return all_cities
 
 
@@ -116,60 +71,13 @@ def _extract_city(location: str) -> str:
     return location.split(",")[0].strip()
 
 
-def generate_seed_keywords(
-    industry: str,
-    location: str,
-    services: list[str] | None = None,
-    service_area_cities: list[str] | None = None,
-) -> list[str]:
+def generate_seed_keywords(profile: BusinessProfile) -> list[str]:
     """
-    Generate seed keywords spread across service area cities.
+    Return seed keywords from the profile (AI-generated).
 
-    Strategy: pair different service terms with different cities so
-    DataForSEO returns a diverse set of {service} {city} keywords.
+    Claude already handles city-pairing for local businesses in the prompt.
     """
-    primary_city = _extract_city(location)
-    industry_lower = industry.lower()
-    industry_key = industry_lower.replace(" ", "_")
-
-    # Build the list of cities to target
-    cities = [primary_city]
-    if service_area_cities:
-        for c in service_area_cities:
-            if c.lower() != primary_city.lower() and c not in cities:
-                cities.append(c)
-
-    # Build service terms list
-    service_terms = [industry_lower]
-    if industry_key in INDUSTRY_SEEDS:
-        service_terms.extend(INDUSTRY_SEEDS[industry_key])
-    if services:
-        for svc in services:
-            if svc.lower() not in [s.lower() for s in service_terms]:
-                service_terms.append(svc)
-
-    # Pair service terms with cities in round-robin
-    # This ensures we get keywords for multiple cities, not just the primary
-    keywords = []
-    for i, term in enumerate(service_terms):
-        city = cities[i % len(cities)]
-        keywords.append(f"{term} {city}")
-
-    # Also ensure the primary city gets the core industry term
-    primary_seed = f"{industry_lower} {primary_city}"
-    if primary_seed.lower() not in [k.lower() for k in keywords]:
-        keywords.insert(0, primary_seed)
-
-    # Deduplicate
-    seen: set[str] = set()
-    unique: list[str] = []
-    for kw in keywords:
-        lower = kw.lower()
-        if lower not in seen:
-            seen.add(lower)
-            unique.append(kw)
-
-    return unique[:20]
+    return profile.seed_keywords[:20]
 
 
 _INTL_MAPPINGS = {
@@ -214,6 +122,9 @@ def _detect_location(location: str) -> str:
     Uses state-level for US (e.g., "Colorado,United States").
     Used by the Keywords for Keywords endpoint which supports state-level.
     """
+    if not location:
+        return "United States"
+
     location_lower = location.lower()
 
     for keyword, country in _INTL_MAPPINGS.items():
@@ -236,6 +147,9 @@ def _detect_country(location: str) -> str:
     The Ranked Keywords endpoint only accepts country-level locations
     (e.g., "United States"), not state-level (e.g., "Colorado,United States").
     """
+    if not location:
+        return "United States"
+
     location_lower = location.lower()
 
     for keyword, country in _INTL_MAPPINGS.items():
@@ -245,76 +159,80 @@ def _detect_country(location: str) -> str:
     return "United States"
 
 
-def _is_blocked_brand(keyword: str) -> bool:
+def _is_blocked_brand(keyword: str, profile: BusinessProfile) -> bool:
     kw_lower = keyword.lower()
-    return any(brand in kw_lower for brand in BRAND_BLOCKLIST)
+    combined_blocklist = UNIVERSAL_BLOCKLIST + [b.lower() for b in profile.brand_blocklist]
+    return any(brand in kw_lower for brand in combined_blocklist)
+
+
+# Stop words stripped from non-local keywords before intent normalization
+_STOP_WORDS = {
+    "a", "an", "the", "and", "or", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "are", "was", "were", "be",
+    "near", "me", "my", "best", "top", "good", "how", "what",
+    "food", "vs",
+}
 
 
 def _normalize_service_intent(keyword: str, known_cities: list[str]) -> str:
     """
-    Extract the service intent from a keyword by removing location parts.
+    Normalize a keyword to its core intent for semantic dedup.
 
-    "house painter castle rock" → "house painter"
-    "interior painting castle rock co" → "interior painting"
-    "castle rock house painters" → "house painters"
+    Local path (cities provided): strips city names and state abbreviations,
+    sorts remaining words. Intentionally does NOT stem — "house painter" and
+    "painting contractor" are different service intents worth keeping.
 
-    This lets us detect that these are all semantically the same.
+    Non-local path (no cities): strips stop words, stems, deduplicates words.
+    Much more aggressive because without city variation we need to collapse
+    "project management software" / "project management tools" / etc.
     """
     kw = keyword.lower()
 
-    # Remove city names
-    for city in known_cities:
-        kw = kw.replace(city.lower(), "")
+    if known_cities:
+        # Local: strip city names and state abbreviations
+        for city in known_cities:
+            kw = kw.replace(city.lower(), "")
+        kw = re.sub(r"\b[a-z]{2}\b$", "", kw)  # trailing 2-letter state
+        kw = re.sub(r"\bco\b", "", kw)
+        kw = re.sub(r"\bin\b", "", kw)
+        words = sorted(kw.split())
+    else:
+        # Non-local: aggressive normalization
+        words = kw.split()
+        words = [w for w in words if w not in _STOP_WORDS and len(w) > 1]
+        words = [_stem_service_word(w) for w in words]
+        words = sorted(set(words))  # dedup words within the keyword
 
-    # Remove state abbreviations and common suffixes
-    kw = re.sub(r"\b[a-z]{2}\b$", "", kw)  # trailing 2-letter state
-    kw = re.sub(r"\bco\b", "", kw)
-    kw = re.sub(r"\bin\b", "", kw)
-
-    # Normalize whitespace and sort words for order-independent comparison
-    words = sorted(kw.split())
     return " ".join(words)
 
 
-def _is_service_relevant(keyword: str, industry: str, services: list[str] | None) -> bool:
-    """Check if keyword is relevant to the service industry."""
-    kw_lower = keyword.lower()
-    industry_key = industry.lower().replace(" ", "_")
-
-    service_signals = {
-        "service", "services", "contractor", "company", "repair",
-        "install", "installation", "removal", "maintenance",
-        "cost", "price", "quote", "estimate", "emergency",
-        "residential", "commercial", "licensed", "professional",
-        "near me", "in my area",
-    }
-
-    if industry_key in INDUSTRY_SEEDS:
-        for seed in INDUSTRY_SEEDS[industry_key]:
-            for word in seed.lower().split():
-                if len(word) > 2 and word not in {"the", "and", "for", "near"}:
-                    service_signals.add(word)
-
-    if services:
-        for svc in services:
-            for word in svc.lower().split():
-                if len(word) > 2:
-                    service_signals.add(word)
-
-    return any(term in kw_lower for term in service_signals)
-
-
-async def get_keywords(
-    industry: str,
-    location: str,
-    services: list[str] | None = None,
-    service_area_cities: list[str] | None = None,
-) -> list[KeywordData]:
+def _core_intent(normalized: str) -> str:
     """
-    Fetch keywords from DataForSEO with service area diversity.
+    Extract the 2 most significant words as a cluster key for diversity capping.
 
-    Seeds are spread across service area cities. Results are filtered for
-    relevance, deduplicated by intent, and diversified by city.
+    Picks the 2 longest words (most specific) from the normalized intent.
+    "management project software" -> "management software"
+    "cuisin ital restaurant"     -> "cuisin restaurant"
+    """
+    words = normalized.split()
+    if len(words) <= 2:
+        return normalized
+    top2 = sorted(sorted(words, key=len, reverse=True)[:2])
+    return " ".join(top2)
+
+
+def _is_relevant(keyword: str, profile: BusinessProfile) -> bool:
+    """Check if keyword is relevant to the business using profile.relevance_terms."""
+    kw_lower = keyword.lower()
+    return any(term.lower() in kw_lower for term in profile.relevance_terms)
+
+
+async def get_keywords(profile: BusinessProfile) -> list[KeywordData]:
+    """
+    Fetch keywords from DataForSEO using profile-driven seeds.
+
+    Seeds come from the BusinessProfile. Results are filtered for
+    relevance, deduplicated, and (for local businesses) diversified by city.
     """
     login = os.getenv("DATAFORSEO_LOGIN")
     password = os.getenv("DATAFORSEO_PASSWORD")
@@ -323,15 +241,9 @@ async def get_keywords(
             "DataForSEO not configured. Set DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD."
         )
 
-    primary_city = _extract_city(location)
-
-    # Build full city list for intent normalization
-    all_cities = [primary_city]
-    if service_area_cities:
-        all_cities.extend(c for c in service_area_cities if c not in all_cities)
-
-    seed_keywords = generate_seed_keywords(industry, location, services, service_area_cities)
-    target_location = _detect_location(location)
+    all_cities = build_city_list(profile)
+    seed_keywords = generate_seed_keywords(profile)
+    target_location = _detect_location(profile.location)
 
     credentials = f"{login}:{password}"
     auth = f"Basic {base64.b64encode(credentials.encode()).decode()}"
@@ -356,20 +268,19 @@ async def get_keywords(
         response.raise_for_status()
         data = response.json()
 
-    return _parse_and_rank(data, industry, services, all_cities)
+    return _parse_and_rank(data, profile, all_cities)
 
 
 def _parse_and_rank(
     response: dict[str, Any],
-    industry: str,
-    services: list[str] | None,
+    profile: BusinessProfile,
     all_cities: list[str],
 ) -> list[KeywordData]:
     """
-    Parse, filter, deduplicate by intent, and diversify results.
+    Parse, filter, deduplicate, and rank results.
 
-    Goal: 10 keywords that each represent a DIFFERENT {service} + {city} combo,
-    matching the style of IdealReport.jpeg.
+    For local businesses: requires city names, applies city diversity cap.
+    For non-local businesses: just dedup and take top 10 by volume.
     """
     # Step 1: Parse all results
     raw: list[tuple[str, int]] = []
@@ -392,14 +303,15 @@ def _parse_and_rank(
     # Step 3: Filter brands and irrelevant
     filtered = []
     for kw, vol in deduped:
-        if _is_blocked_brand(kw):
+        if _is_blocked_brand(kw, profile):
             continue
-        if not _is_service_relevant(kw, industry, services):
+        if not _is_relevant(kw, profile):
             continue
-        # Must contain at least one known city name to be a local keyword
-        has_city = any(city.lower() in kw for city in all_cities)
-        if not has_city:
-            continue
+        if profile.is_local:
+            # Must contain at least one known city name to be a local keyword
+            has_city = any(city.lower() in kw for city in all_cities)
+            if not has_city:
+                continue
         filtered.append((kw, vol))
 
     # Step 4: Semantic dedup — keep highest volume for each intent
@@ -412,50 +324,71 @@ def _parse_and_rank(
     unique_keywords = list(intent_best.values())
     unique_keywords.sort(key=lambda x: x[1], reverse=True)
 
-    # Step 5: Diversify by city — don't let one city dominate
-    final: list[tuple[str, int]] = []
-    city_count: dict[str, int] = {}
-    max_per_city = 3  # No more than 3 keywords per city
+    if profile.is_local:
+        # Step 5 (local only): Diversify by city — don't let one city dominate
+        final: list[tuple[str, int]] = []
+        city_count: dict[str, int] = {}
+        max_per_city = 3  # No more than 3 keywords per city
 
-    for kw, vol in unique_keywords:
-        if len(final) >= 10:
-            break
-
-        # Which city is this keyword for?
-        kw_city = None
-        for city in all_cities:
-            if city.lower() in kw:
-                kw_city = city.lower()
-                break
-
-        if kw_city:
-            count = city_count.get(kw_city, 0)
-            if count >= max_per_city:
-                continue
-            city_count[kw_city] = count + 1
-
-        final.append((kw, vol))
-
-    # If we still need more (rare), add back skipped ones
-    if len(final) < 10:
-        used = {kw for kw, _ in final}
         for kw, vol in unique_keywords:
             if len(final) >= 10:
                 break
-            if kw not in used:
-                final.append((kw, vol))
+
+            # Which city is this keyword for?
+            kw_city = None
+            for city in all_cities:
+                if city.lower() in kw:
+                    kw_city = city.lower()
+                    break
+
+            if kw_city:
+                count = city_count.get(kw_city, 0)
+                if count >= max_per_city:
+                    continue
+                city_count[kw_city] = count + 1
+
+            final.append((kw, vol))
+
+        # If we still need more (rare), add back skipped ones
+        if len(final) < 10:
+            used = {kw for kw, _ in final}
+            for kw, vol in unique_keywords:
+                if len(final) >= 10:
+                    break
+                if kw not in used:
+                    final.append((kw, vol))
+    else:
+        # Non-local: diversity cap by core intent — don't let one topic dominate
+        final: list[tuple[str, int]] = []
+        core_count: dict[str, int] = {}
+        max_per_core = 2  # No more than 2 keywords per core bigram
+
+        for kw, vol in unique_keywords:
+            if len(final) >= 10:
+                break
+            intent = _normalize_service_intent(kw, [])
+            core = _core_intent(intent)
+            count = core_count.get(core, 0)
+            if count >= max_per_core:
+                continue
+            core_count[core] = count + 1
+            final.append((kw, vol))
+
+        # Backfill if we still need more
+        if len(final) < 10:
+            used = {kw for kw, _ in final}
+            for kw, vol in unique_keywords:
+                if len(final) >= 10:
+                    break
+                if kw not in used:
+                    final.append((kw, vol))
 
     return [KeywordData(keyword=kw, monthly_searches=vol) for kw, vol in final]
 
 
-def get_keywords_sync(
-    industry: str,
-    location: str,
-    services: list[str] | None = None,
-    service_area_cities: list[str] | None = None,
-) -> list[KeywordData]:
+def get_keywords_sync(profile: BusinessProfile) -> list[KeywordData]:
     """Synchronous wrapper for get_keywords."""
-    return asyncio.run(get_keywords(industry, location, services, service_area_cities))
+    return asyncio.run(get_keywords(profile))
 
 
 # ---------------------------------------------------------------------------
@@ -538,7 +471,7 @@ def _stem_service_word(word: str) -> str:
     """Reduce a word to its root for fuzzy cross-referencing.
 
     Handles the common service-industry suffixes so that word-form variants
-    match: painter/painting/painters → paint, electrician/electrical → electric.
+    match: painter/painting/painters -> paint, electrician/electrical -> electric.
 
     Only used for ranking cross-reference — NOT for the keyword dedup pipeline,
     where we want "house painter" and "house painting" to stay distinct.
@@ -554,9 +487,6 @@ def _stem_service_word(word: str) -> str:
     """
     if len(word) <= 4:
         return word
-    # Longer suffixes first to avoid partial matches.
-    # No "ical" — it over-strips "electrical" → "electr"; "al" alone gives "electric".
-    # Min root length 4 protects short nouns (water, sewer) from false stemming.
     for suffix in ("ians", "ers", "ing", "ors", "ian", "er", "or", "al", "s"):
         if word.endswith(suffix) and len(word) - len(suffix) >= 4:
             return word[: -len(suffix)]
@@ -575,9 +505,10 @@ def _normalize_for_ranking_match(keyword: str, known_cities: list[str]) -> str:
     for city in known_cities:
         kw = kw.replace(city.lower(), "")
 
-    kw = re.sub(r"\b[a-z]{2}\b$", "", kw)
-    kw = re.sub(r"\bco\b", "", kw)
-    kw = re.sub(r"\bin\b", "", kw)
+    if known_cities:
+        kw = re.sub(r"\b[a-z]{2}\b$", "", kw)
+        kw = re.sub(r"\bco\b", "", kw)
+        kw = re.sub(r"\bin\b", "", kw)
 
     words = sorted(_stem_service_word(w) for w in kw.split() if w)
     return " ".join(words)

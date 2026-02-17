@@ -4,20 +4,7 @@ from pathlib import Path
 
 from weasyprint import HTML
 
-
-def _pluralize_industry(industry: str) -> str:
-    """Convert industry to customer-friendly plural form."""
-    plurals = {
-        "plumbing": "plumbers",
-        "hvac": "HVAC companies",
-        "roofing": "roofers",
-        "electrical": "electricians",
-        "painting": "painters",
-        "landscaping": "landscapers",
-        "cleaning": "cleaning services",
-        "pest_control": "pest control companies",
-    }
-    return plurals.get(industry.lower().replace(" ", "_"), f"{industry} businesses")
+from .models import BusinessProfile
 
 
 def _format_number(n: int) -> str:
@@ -26,8 +13,7 @@ def _format_number(n: int) -> str:
 
 
 def generate_report_pdf(
-    business_name: str,
-    industry: str,
+    profile: BusinessProfile,
     keywords: list[dict],
     output_path: Path,
 ) -> Path:
@@ -35,15 +21,13 @@ def generate_report_pdf(
     Generate a keyword opportunity PDF report.
 
     Args:
-        business_name: Extracted business name
-        industry: Business industry
+        profile: BusinessProfile with all business data and report copy
         keywords: List of {"keyword": str, "monthly_searches": int, "on_old_site": bool}
         output_path: Where to save the PDF
 
     Returns:
         Path to the generated PDF
     """
-    industry_plural = _pluralize_industry(industry)
     total_impressions = sum(kw["monthly_searches"] for kw in keywords)
     old_site_count = sum(1 for kw in keywords if kw["on_old_site"])
     new_site_count = len(keywords)
@@ -95,6 +79,12 @@ def generate_report_pdf(
         old_total_display = f'<span class="total-number">{old_site_count}</span>'
     else:
         old_total_display = f'<span class="total-number">{old_site_count}</span>'
+
+    # Use profile fields for card subtitle
+    if profile.is_local:
+        card_subtitle = f"These are the search terms your customers use to find {profile.industry_plural} in your area"
+    else:
+        card_subtitle = f"These are the search terms your customers use to find {profile.industry_plural} online"
 
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -360,8 +350,8 @@ def generate_report_pdf(
 
     <div class="header">
         <div class="prepared-for">Prepared For</div>
-        <div class="business-name">{business_name}</div>
-        <div class="report-subtitle">Local SEO Opportunity Report</div>
+        <div class="business-name">{profile.business_name}</div>
+        <div class="report-subtitle">{profile.report_headline}</div>
     </div>
 
     <div class="intro-block">
@@ -371,15 +361,13 @@ def generate_report_pdf(
             they're finding you.
         </p>
         <p>
-            At ZING, we build your new website along with <strong>50 local landing pages</strong>
-            so you rank in more places and get more impressions. That means more people in your
-            area see your business when they search &mdash; and more of them get in touch.
+            {profile.report_value_prop}
         </p>
     </div>
 
     <div class="keywords-section">
         <div class="card-heading">Your Keywords</div>
-        <div class="card-subtitle">These are the search terms your customers use to find {industry_plural} in your area</div>
+        <div class="card-subtitle">{card_subtitle}</div>
 
         <table>
             <thead>
@@ -403,11 +391,9 @@ def generate_report_pdf(
     </div>
 
     <div class="banner">
-        <div class="banner-heading">What this means for {business_name}</div>
+        <div class="banner-heading">What this means for {profile.business_name}</div>
         <div class="banner-text">
-            With your new website and 50 landing pages, your business has the potential to appear
-            in thousands more local searches every month. More visibility means more enquiries,
-            and more enquiries means more jobs.
+            {profile.report_cta_text}
         </div>
         <span class="pricing-pill">$59/mo &middot; No contract &middot; Cancel anytime</span>
     </div>
