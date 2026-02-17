@@ -76,12 +76,12 @@ def _extract_city(location: str) -> str:
 
 def generate_seed_keywords(profile: BusinessProfile) -> list[str]:
     """
-    Return seed keywords from the profile, ensuring local seeds include city names.
+    Return seed keywords from the profile, ensuring a mix of city-paired and
+    generic seeds for local businesses.
 
-    Haiku sometimes generates generic seeds ("emergency plumber", "drain cleaning")
-    without city names even when instructed to pair them. For local businesses, this
-    function detects city-less seeds and pairs them with service area cities in
-    round-robin to guarantee DataForSEO returns location-specific results.
+    Strategy: send BOTH city-paired seeds (produce local keyword suggestions)
+    AND generic seeds (produce a large pool that may include city variants).
+    This maximizes the chance of finding local keywords even for small cities.
     """
     seeds = list(profile.seed_keywords[:20])
 
@@ -95,7 +95,6 @@ def generate_seed_keywords(profile: BusinessProfile) -> list[str]:
     if not all_cities:
         return seeds
 
-    # Check how many seeds already have a city name
     cities_lower = [c.lower() for c in all_cities]
 
     def _has_city(kw: str) -> bool:
@@ -109,14 +108,23 @@ def generate_seed_keywords(profile: BusinessProfile) -> list[str]:
     if len(with_city) >= len(seeds) * 0.5:
         return seeds
 
-    # Otherwise, pair city-less seeds with cities in round-robin
-    paired: list[str] = list(with_city)
+    # Build a mix: city-paired seeds + generic seeds (up to 20 total)
+    # City-paired seeds produce local keyword suggestions from DataForSEO
+    # Generic seeds produce a large pool that the pipeline filters for city names
+    mixed: list[str] = list(with_city)
+
+    # Pair half of generic seeds with cities (round-robin)
     city_idx = 0
-    for kw in without_city:
-        paired.append(f"{kw} {all_cities[city_idx % len(all_cities)]}")
+    half = max(len(without_city) // 2, 5)
+    for kw in without_city[:half]:
+        mixed.append(f"{kw} {all_cities[city_idx % len(all_cities)]}")
         city_idx += 1
 
-    return paired[:20]
+    # Keep the rest as generic (they produce broad results)
+    for kw in without_city[half:]:
+        mixed.append(kw)
+
+    return mixed[:20]
 
 
 _INTL_MAPPINGS = {
@@ -349,8 +357,9 @@ def _parse_and_rank(
         seen_exact.add(kw)
         deduped.append((kw, vol))
 
-    # Step 3: Filter brands and irrelevant
-    filtered = []
+    # Step 3: Filter brands and irrelevant; separate local vs generic
+    local_filtered = []  # Keywords containing a city name
+    generic_filtered = []  # Relevant but no city name (fallback pool)
     blocked_count = 0
     irrelevant_count = 0
     no_city_count = 0
@@ -362,19 +371,32 @@ def _parse_and_rank(
             irrelevant_count += 1
             continue
         if profile.is_local:
-            # Must contain at least one known city name to be a local keyword
             has_city = any(city.lower() in kw for city in all_cities)
-            if not has_city:
+            if has_city:
+                local_filtered.append((kw, vol))
+            else:
                 no_city_count += 1
-                continue
-        filtered.append((kw, vol))
+                generic_filtered.append((kw, vol))
+        else:
+            local_filtered.append((kw, vol))
+
+    # For local businesses: prefer city-specific keywords, fall back to generic
+    # if fewer than 10 local keywords available
+    filtered = local_filtered
+    if profile.is_local and len(local_filtered) < 10 and generic_filtered:
+        # Strip "near me" variants and other non-local noise from fallbacks
+        good_generic = [
+            (kw, vol) for kw, vol in generic_filtered
+            if "near me" not in kw and "close to me" not in kw
+        ]
+        filtered = local_filtered + good_generic
 
     logger.info(
-        "_parse_and_rank: deduped=%d, blocked=%d, irrelevant=%d, no_city=%d, passed=%d",
-        len(deduped), blocked_count, irrelevant_count, no_city_count, len(filtered),
+        "_parse_and_rank: deduped=%d, blocked=%d, irrelevant=%d, no_city=%d, local=%d, generic_fallback=%d",
+        len(deduped), blocked_count, irrelevant_count, no_city_count,
+        len(local_filtered), len(filtered) - len(local_filtered),
     )
     if not filtered and deduped:
-        # Log sample keywords that were rejected for debugging
         samples = sorted(deduped, key=lambda x: x[1], reverse=True)[:5]
         logger.info("_parse_and_rank: sample rejected keywords: %s", samples)
 
@@ -389,34 +411,43 @@ def _parse_and_rank(
     unique_keywords.sort(key=lambda x: x[1], reverse=True)
 
     if profile.is_local:
-        # Step 5 (local only): Diversify by city — don't let one city dominate
-        final: list[tuple[str, int]] = []
-        city_count: dict[str, int] = {}
-        max_per_city = 3  # No more than 3 keywords per city
-
-        for kw, vol in unique_keywords:
-            if len(final) >= 10:
-                break
-
-            # Which city is this keyword for?
-            kw_city = None
+        # Step 5 (local only): Prioritize city-specific, then backfill generic
+        def _kw_city(kw: str):
             for city in all_cities:
                 if city.lower() in kw:
-                    kw_city = city.lower()
-                    break
+                    return city.lower()
+            return None
 
-            if kw_city:
-                count = city_count.get(kw_city, 0)
-                if count >= max_per_city:
-                    continue
-                city_count[kw_city] = count + 1
+        # Split into city-specific and generic pools
+        city_keywords = [(kw, vol) for kw, vol in unique_keywords if _kw_city(kw)]
+        generic_keywords = [(kw, vol) for kw, vol in unique_keywords if not _kw_city(kw)]
 
+        # First pass: city-specific keywords with diversity cap
+        final: list[tuple[str, int]] = []
+        city_count: dict[str, int] = {}
+        max_per_city = 3
+
+        for kw, vol in city_keywords:
+            if len(final) >= 10:
+                break
+            kw_c = _kw_city(kw)
+            count = city_count.get(kw_c, 0)
+            if count >= max_per_city:
+                continue
+            city_count[kw_c] = count + 1
             final.append((kw, vol))
 
-        # If we still need more (rare), add back skipped ones
+        # Backfill with generic keywords if we don't have enough
+        if len(final) < 10:
+            for kw, vol in generic_keywords:
+                if len(final) >= 10:
+                    break
+                final.append((kw, vol))
+
+        # Last resort: add back skipped city keywords
         if len(final) < 10:
             used = {kw for kw, _ in final}
-            for kw, vol in unique_keywords:
+            for kw, vol in city_keywords:
                 if len(final) >= 10:
                     break
                 if kw not in used:
