@@ -172,17 +172,19 @@ def _detect_location(location: str) -> str:
     if not location:
         return "United States"
 
-    location_lower = location.lower()
-
-    for keyword, country in _INTL_MAPPINGS.items():
-        if keyword in location_lower:
-            return country
-
+    # Check US state abbreviation FIRST (most common case)
     match = re.search(r",\s*([A-Z]{2})\b", location)
     if match:
         abbrev = match.group(1)
         if abbrev in _US_STATES:
             return f"{_US_STATES[abbrev]},United States"
+
+    # International — use word boundaries to avoid substring false positives
+    # (e.g. "Setauket" contains "uk" but isn't the UK)
+    location_lower = location.lower()
+    for keyword, country in _INTL_MAPPINGS.items():
+        if re.search(r"\b" + re.escape(keyword) + r"\b", location_lower):
+            return country
 
     return "United States"
 
@@ -200,7 +202,7 @@ def _detect_country(location: str) -> str:
     location_lower = location.lower()
 
     for keyword, country in _INTL_MAPPINGS.items():
-        if keyword in location_lower:
+        if re.search(r"\b" + re.escape(keyword) + r"\b", location_lower):
             return country
 
     return "United States"
