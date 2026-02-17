@@ -76,11 +76,47 @@ def _extract_city(location: str) -> str:
 
 def generate_seed_keywords(profile: BusinessProfile) -> list[str]:
     """
-    Return seed keywords from the profile (AI-generated).
+    Return seed keywords from the profile, ensuring local seeds include city names.
 
-    Claude already handles city-pairing for local businesses in the prompt.
+    Haiku sometimes generates generic seeds ("emergency plumber", "drain cleaning")
+    without city names even when instructed to pair them. For local businesses, this
+    function detects city-less seeds and pairs them with service area cities in
+    round-robin to guarantee DataForSEO returns location-specific results.
     """
-    return profile.seed_keywords[:20]
+    seeds = list(profile.seed_keywords[:20])
+
+    if not profile.is_local or not profile.location:
+        return seeds
+
+    all_cities = [_extract_city(profile.location)]
+    if profile.service_area_cities:
+        all_cities.extend(c for c in profile.service_area_cities if c not in all_cities)
+
+    if not all_cities:
+        return seeds
+
+    # Check how many seeds already have a city name
+    cities_lower = [c.lower() for c in all_cities]
+
+    def _has_city(kw: str) -> bool:
+        kw_lower = kw.lower()
+        return any(city in kw_lower for city in cities_lower)
+
+    with_city = [s for s in seeds if _has_city(s)]
+    without_city = [s for s in seeds if not _has_city(s)]
+
+    # If most seeds already have cities, return as-is
+    if len(with_city) >= len(seeds) * 0.5:
+        return seeds
+
+    # Otherwise, pair city-less seeds with cities in round-robin
+    paired: list[str] = list(with_city)
+    city_idx = 0
+    for kw in without_city:
+        paired.append(f"{kw} {all_cities[city_idx % len(all_cities)]}")
+        city_idx += 1
+
+    return paired[:20]
 
 
 _INTL_MAPPINGS = {

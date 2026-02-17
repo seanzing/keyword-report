@@ -13,7 +13,7 @@ from .models import BusinessProfile, BUSINESS_MODELS
 
 load_dotenv()
 
-HAIKU_MODEL = "claude-3-5-haiku-20241022"
+HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 
 def extract_business_info(pages: list[ScrapedPage]) -> BusinessProfile:
