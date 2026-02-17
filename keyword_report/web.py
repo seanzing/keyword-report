@@ -56,6 +56,10 @@ async def generate(url: str):
                 "progress",
                 f"Found: {profile.business_name} ({profile.industry} — {profile.business_model})",
             )
+            yield _sse(
+                "progress",
+                f"Location: {profile.location or '(none)'} | Cities: {len(profile.service_area_cities)} | Seeds: {len(profile.seed_keywords)} | Relevance terms: {len(profile.relevance_terms)}",
+            )
 
             yield _sse("progress", "Fetching keywords and ranking data...")
             domain = _extract_domain(url)
@@ -67,7 +71,11 @@ async def generate(url: str):
             )
 
             if not keyword_data:
-                yield _sse("error", "No keyword data returned. Check DataForSEO credentials.")
+                yield _sse(
+                    "error",
+                    f"No keyword data returned. Seeds: {len(profile.seed_keywords)}, "
+                    f"Location: {profile.location}, Cities: {len(all_cities)}",
+                )
                 return
 
             yield _sse(

@@ -8,6 +8,7 @@ Strategy:
 
 import asyncio
 import base64
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from typing import Any
 
 import httpx
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 from .models import BusinessProfile
 
@@ -245,6 +248,14 @@ async def get_keywords(profile: BusinessProfile) -> list[KeywordData]:
     seed_keywords = generate_seed_keywords(profile)
     target_location = _detect_location(profile.location)
 
+    logger.info(
+        "get_keywords: seeds=%d, cities=%d, location=%s, relevance_terms=%d",
+        len(seed_keywords), len(all_cities), target_location, len(profile.relevance_terms),
+    )
+    logger.info("get_keywords: seeds=%s", seed_keywords[:5])
+    logger.info("get_keywords: relevance=%s", profile.relevance_terms[:10])
+    logger.info("get_keywords: cities=%s", all_cities)
+
     credentials = f"{login}:{password}"
     auth = f"Basic {base64.b64encode(credentials.encode()).decode()}"
 
@@ -291,6 +302,8 @@ def _parse_and_rank(
             if keyword and volume and volume > 0:
                 raw.append((keyword.lower(), volume))
 
+    logger.info("_parse_and_rank: raw=%d keywords from API", len(raw))
+
     # Step 2: Case dedup
     seen_exact: set[str] = set()
     deduped = []
@@ -302,17 +315,32 @@ def _parse_and_rank(
 
     # Step 3: Filter brands and irrelevant
     filtered = []
+    blocked_count = 0
+    irrelevant_count = 0
+    no_city_count = 0
     for kw, vol in deduped:
         if _is_blocked_brand(kw, profile):
+            blocked_count += 1
             continue
         if not _is_relevant(kw, profile):
+            irrelevant_count += 1
             continue
         if profile.is_local:
             # Must contain at least one known city name to be a local keyword
             has_city = any(city.lower() in kw for city in all_cities)
             if not has_city:
+                no_city_count += 1
                 continue
         filtered.append((kw, vol))
+
+    logger.info(
+        "_parse_and_rank: deduped=%d, blocked=%d, irrelevant=%d, no_city=%d, passed=%d",
+        len(deduped), blocked_count, irrelevant_count, no_city_count, len(filtered),
+    )
+    if not filtered and deduped:
+        # Log sample keywords that were rejected for debugging
+        samples = sorted(deduped, key=lambda x: x[1], reverse=True)[:5]
+        logger.info("_parse_and_rank: sample rejected keywords: %s", samples)
 
     # Step 4: Semantic dedup — keep highest volume for each intent
     intent_best: dict[str, tuple[str, int]] = {}
