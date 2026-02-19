@@ -29,6 +29,7 @@ def generate_report_pdf(
         Path to the generated PDF
     """
     total_impressions = sum(kw["monthly_searches"] for kw in keywords)
+    missing_impressions = sum(kw["monthly_searches"] for kw in keywords if not kw["on_old_site"])
     old_site_count = sum(1 for kw in keywords if kw["on_old_site"])
     new_site_count = len(keywords)
 
@@ -298,6 +299,40 @@ def generate_report_pdf(
         color: #4ecdc4;
     }}
 
+    /* Missing impressions row */
+    .missing-row td {{
+        padding: 14px 12px;
+        vertical-align: middle;
+    }}
+
+    .missing-label {{
+        font-size: 14px;
+        font-weight: 600;
+        color: #e74c3c;
+    }}
+
+    .missing-impressions {{
+        text-align: center;
+    }}
+
+    .pill-missing {{
+        display: inline-block;
+        background: #e74c3c;
+        color: white;
+        font-size: 13px;
+        font-weight: 600;
+        padding: 4px 14px;
+        border-radius: 20px;
+        white-space: nowrap;
+    }}
+
+    .missing-note {{
+        text-align: center;
+        font-size: 12px;
+        font-style: italic;
+        color: #9ca3af;
+    }}
+
     /* Bottom banner */
     .banner {{
         background: linear-gradient(135deg, #1a1a2e 0%, #2a2a4e 100%);
@@ -385,6 +420,11 @@ def generate_report_pdf(
                     <td class="total-impressions"><span class="pill-total">{_format_number(total_impressions)}/mo</span></td>
                     <td class="total-check">{old_total_display}</td>
                     <td class="total-check"><span class="total-new">{new_site_count}</span></td>
+                </tr>
+                <tr class="missing-row">
+                    <td class="missing-label">Missing Impressions</td>
+                    <td class="missing-impressions"><span class="pill-missing">{_format_number(missing_impressions)}/mo</span></td>
+                    <td colspan="2" class="missing-note">impressions you're not getting</td>
                 </tr>
             </tbody>
         </table>
