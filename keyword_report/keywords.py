@@ -312,7 +312,7 @@ async def get_keywords(profile: BusinessProfile) -> list[KeywordData]:
             "location_name": target_location,
             "language_name": "English",
             "sort_by": "search_volume",
-            "limit": 200,
+            "limit": 700,
         }
     ]
     headers = {
