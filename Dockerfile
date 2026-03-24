@@ -20,7 +20,7 @@ RUN mkdir -p keyword_report && touch keyword_report/__init__.py \
     && pip install --no-cache-dir . \
     && rm -rf keyword_report
 
-# Install Playwright Firefox (only re-runs when pip deps change)
+# Install Playwright Firefox (bust cache: 2026-03-24)
 RUN playwright install --with-deps firefox
 
 # --- Fast layer: copy application code (changes every push) ---
