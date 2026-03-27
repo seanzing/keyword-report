@@ -115,10 +115,16 @@ async def _scrape_page(
 ) -> tuple[ScrapedPage | None, list[str]]:
     """Scrape a single page, returning the page data and discovered links."""
     try:
-        await page.goto(url, timeout=30000, wait_until="networkidle")
+        try:
+            await page.goto(url, timeout=30000, wait_until="networkidle")
+        except PlaywrightTimeout:
+            # Some sites never reach networkidle (analytics, chat widgets, etc.)
+            # Fall back to domcontentloaded + a short wait for JS rendering
+            await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)
         await page.wait_for_timeout(1000)
         html = await page.content()
-    except (PlaywrightTimeout, Exception):
+    except Exception:
         return None, []
 
     soup = BeautifulSoup(html, "html.parser")
