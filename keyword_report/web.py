@@ -1,14 +1,20 @@
 """FastAPI web app for keyword report generation."""
 
 import asyncio
+import hmac
+import logging
 import os
 import re
 import uuid
+from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+
+logger = logging.getLogger("keyword_report.web")
 
 from .scraper import scrape_site
 from .analyzer import extract_business_info
@@ -27,6 +33,40 @@ app = FastAPI(title="Keyword Report Generator")
 
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "/app/reports"))
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+API_TOKEN = os.getenv("KEYWORD_REPORT_API_TOKEN", "").strip()
+DATA_ENDPOINT_TIMEOUT = float(os.getenv("KEYWORD_REPORT_DATA_TIMEOUT", "180"))
+
+
+def require_api_token(authorization: str | None = Header(default=None)) -> None:
+    """Constant-time bearer token check. Returns 503 if server has no token configured."""
+    if not API_TOKEN:
+        logger.error("KEYWORD_REPORT_API_TOKEN is not set; refusing request to protected endpoint")
+        raise HTTPException(status_code=503, detail="Server not configured for API access.")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token.")
+    presented = authorization.split(" ", 1)[1].strip()
+    if not hmac.compare_digest(presented, API_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid bearer token.")
+
+
+def _validate_url(url: str) -> str:
+    """Reject obviously bad / SSRF-prone URLs. Returns the normalized URL."""
+    if not url or len(url) > 2048:
+        raise HTTPException(status_code=400, detail="URL is required and must be < 2048 chars.")
+    parsed = urlparse(url if "://" in url else f"https://{url}")
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="URL must use http or https.")
+    host = (parsed.hostname or "").lower()
+    if not host or "." not in host:
+        raise HTTPException(status_code=400, detail="URL must include a valid hostname.")
+    # Block local / internal targets to mitigate SSRF.
+    blocked_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "metadata.google.internal"}
+    if host in blocked_hosts or host.endswith(".local") or host.endswith(".internal"):
+        raise HTTPException(status_code=400, detail="URL host is not allowed.")
+    if host.startswith("169.254.") or host.startswith("10.") or host.startswith("192.168."):
+        raise HTTPException(status_code=400, detail="URL host is not allowed.")
+    return parsed.geturl()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -119,6 +159,77 @@ async def generate(url: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/api/data", dependencies=[Depends(require_api_token)])
+async def generate_data(url: str):
+    """Run the keyword research pipeline and return raw JSON (no PDF).
+
+    Requires `Authorization: Bearer <KEYWORD_REPORT_API_TOKEN>` header.
+    """
+    request_id = uuid.uuid4().hex[:12]
+    safe_url = _validate_url(url)
+
+    async def _pipeline() -> dict:
+        site = await scrape_site(safe_url, max_pages=5)
+        if not site.pages:
+            raise HTTPException(status_code=422, detail="Could not scrape any pages from this URL.")
+
+        profile = await asyncio.to_thread(extract_business_info, site.pages)
+        domain = _extract_domain(safe_url)
+        all_cities = build_city_list(profile)
+
+        keyword_data, ranked_keywords = await asyncio.gather(
+            get_keywords(profile),
+            get_ranked_keywords(domain, profile.location),
+        )
+
+        if not keyword_data:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"No keyword data returned. Seeds: {len(profile.seed_keywords)}, "
+                    f"Location: {profile.location}, Cities: {len(all_cities)}"
+                ),
+            )
+
+        keyword_results = check_ranking_for_keywords(
+            keyword_data, ranked_keywords, all_cities
+        )
+        total = sum(kw["monthly_searches"] for kw in keyword_results)
+        old_count = sum(1 for kw in keyword_results if kw["on_old_site"])
+
+        return {
+            "request_id": request_id,
+            "url": safe_url,
+            "domain": domain,
+            "profile": asdict(profile),
+            "keywords": keyword_results,
+            "totals": {
+                "total_impressions": total,
+                "old_site_keywords": old_count,
+                "new_site_keywords": len(keyword_results),
+                "ranked_keywords_checked": len(ranked_keywords),
+            },
+        }
+
+    try:
+        payload = await asyncio.wait_for(_pipeline(), timeout=DATA_ENDPOINT_TIMEOUT)
+        return JSONResponse({"ok": True, **payload})
+    except HTTPException:
+        raise
+    except asyncio.TimeoutError:
+        logger.warning("[%s] /api/data timed out for url=%s", request_id, safe_url)
+        raise HTTPException(
+            status_code=504,
+            detail=f"Pipeline exceeded {DATA_ENDPOINT_TIMEOUT:.0f}s (request_id={request_id}).",
+        )
+    except Exception as e:
+        logger.exception("[%s] /api/data failed for url=%s", request_id, safe_url)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal error (request_id={request_id}): {type(e).__name__}",
+        )
 
 
 @app.get("/reports/{filename}")
