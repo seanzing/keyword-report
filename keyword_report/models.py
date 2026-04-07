@@ -28,6 +28,7 @@ class BusinessProfile:
     relevance_terms: list[str] = field(default_factory=list)
     brand_blocklist: list[str] = field(default_factory=list)
     service_synonyms: list[list[str]] = field(default_factory=list)
+    negative_terms: list[str] = field(default_factory=list)
     report_headline: str = "SEO Opportunity Report"
     report_value_prop: str = ""
     report_cta_text: str = ""

@@ -230,6 +230,17 @@ _COMMERCIAL_MODIFIERS = {
     "contractors", "local", "trusted", "certified", "licensed",
     "quality", "reliable", "experienced", "free", "estimate", "quote",
     "cost", "price", "prices", "pricing", "review", "reviews",
+    "install", "installation", "installations", "installer", "installers",
+    "fitting", "fitted", "fitter", "fitters", "job", "jobs", "work",
+}
+
+# Retail / product-supply intent words. For local_service businesses these
+# are filtered out entirely (they indicate someone shopping for materials,
+# not hiring a service). local_storefront businesses keep them.
+_RETAIL_INTENT_TERMS = {
+    "store", "stores", "shop", "shops", "showroom", "showrooms",
+    "supplier", "suppliers", "supply", "supplies", "warehouse",
+    "outlet", "outlets", "wholesale", "wholesaler",
 }
 
 
@@ -466,18 +477,33 @@ def _parse_and_rank(
         seen_exact.add(kw)
         deduped.append((kw, vol))
 
-    # Step 3: Filter brands and irrelevant; separate local vs generic
+    # Step 3: Filter brands, irrelevant, retail intent, negative terms;
+    # separate local vs generic
     local_filtered = []  # Keywords containing a city name
     generic_filtered = []  # Relevant but no city name (fallback pool)
     blocked_count = 0
     irrelevant_count = 0
     no_city_count = 0
+    retail_count = 0
+    negative_count = 0
+
+    # Retail filter only applies to service businesses, not storefronts.
+    apply_retail_filter = profile.business_model == "local_service"
+    negative_terms_lower = [t.lower() for t in profile.negative_terms]
+
     for kw, vol in deduped:
         if _is_blocked_brand(kw, profile):
             blocked_count += 1
             continue
         if not _is_relevant(kw, profile):
             irrelevant_count += 1
+            continue
+        kw_words = set(kw.split())
+        if apply_retail_filter and (kw_words & _RETAIL_INTENT_TERMS):
+            retail_count += 1
+            continue
+        if any(neg in kw for neg in negative_terms_lower):
+            negative_count += 1
             continue
         if profile.is_local:
             has_city = any(city.lower() in kw for city in all_cities)
@@ -509,9 +535,9 @@ def _parse_and_rank(
             filtered = local_filtered + good_generic
 
     logger.info(
-        "_parse_and_rank: deduped=%d, blocked=%d, irrelevant=%d, no_city=%d, local=%d, generic_fallback=%d",
-        len(deduped), blocked_count, irrelevant_count, no_city_count,
-        len(local_filtered), len(filtered) - len(local_filtered),
+        "_parse_and_rank: deduped=%d, blocked=%d, irrelevant=%d, retail=%d, negative=%d, no_city=%d, local=%d, generic_fallback=%d",
+        len(deduped), blocked_count, irrelevant_count, retail_count, negative_count,
+        no_city_count, len(local_filtered), len(filtered) - len(local_filtered),
     )
     if not filtered and deduped:
         samples = sorted(deduped, key=lambda x: x[1], reverse=True)[:5]

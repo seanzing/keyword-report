@@ -75,6 +75,7 @@ def extract_business_info(pages: list[ScrapedPage]) -> BusinessProfile:
             '  "relevance_terms": ["term1", "term2", ...],\n'
             '  "brand_blocklist": ["competitor1", "aggregator1", ...],\n'
             '  "service_synonyms": [["refinish","reglaze","resurface","refurbish","restore"], ["tub","bathtub","bath"]],\n'
+            '  "negative_terms": ["wood floor", "carpet", "vinyl plank", "laminate"],\n'
             '  "report_headline": "...",\n'
             '  "report_value_prop": "...",\n'
             '  "report_cta_text": "..."\n'
@@ -108,6 +109,15 @@ def extract_business_info(pages: list[ScrapedPage]) -> BusinessProfile:
             "'professional service'. Think: what single word in a keyword tells you it's relevant to this business?\n\n"
             "BRAND_BLOCKLIST: List competitor brand names, aggregator sites (Yelp, Angi, etc.), and major "
             "retailers/platforms that should be filtered out of keyword results. 5-15 entries.\n\n"
+            "NEGATIVE_TERMS: 3-10 short phrases (1-3 words) that signal a keyword belongs "
+            "to an ADJACENT BUT WRONG vertical for this business. The keyword pipeline will "
+            "drop any keyword containing one of these as a substring. Think about what "
+            "neighbors this business in search results but is NOT what they sell. Examples: "
+            "for a TILE contractor, exclude 'wood floor', 'hardwood', 'carpet', 'vinyl plank', "
+            "'laminate' (those are flooring, not tile). For a BATHTUB refinisher, exclude "
+            "'bathtub installation', 'bathtub replacement', 'shower remodel' (refinishing != "
+            "remodeling). For an EXTERIOR painter, exclude 'interior painter', 'cabinet "
+            "painting'. Be specific. Empty list if there's no obvious adjacent vertical.\n\n"
             "SERVICE_SYNONYMS: Groups of words that mean the SAME THING for THIS specific business, "
             "so that semantically identical keywords can be clustered. Each inner list is one synonym "
             "group — the first word will be the canonical form. Think carefully about the industry: "
@@ -156,6 +166,7 @@ def extract_business_info(pages: list[ScrapedPage]) -> BusinessProfile:
         relevance_terms=result.get("relevance_terms", []),
         brand_blocklist=result.get("brand_blocklist", []),
         service_synonyms=result.get("service_synonyms", []),
+        negative_terms=result.get("negative_terms", []),
         report_headline=result.get("report_headline", "SEO Opportunity Report"),
         report_value_prop=result.get("report_value_prop", ""),
         report_cta_text=result.get("report_cta_text", ""),
