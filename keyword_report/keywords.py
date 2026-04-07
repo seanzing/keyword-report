@@ -222,35 +222,65 @@ _STOP_WORDS = {
     "food", "vs",
 }
 
+# Extra modifiers stripped in aggregate-mode normalization so that
+# commercial variants of the same intent collapse to one cluster.
+_COMMERCIAL_MODIFIERS = {
+    "affordable", "cheap", "professional", "pro", "expert", "experts",
+    "company", "companies", "service", "services", "contractor",
+    "contractors", "local", "trusted", "certified", "licensed",
+    "quality", "reliable", "experienced", "free", "estimate", "quote",
+    "cost", "price", "prices", "pricing", "review", "reviews",
+}
 
-def _normalize_service_intent(keyword: str, known_cities: list[str]) -> str:
+
+def _normalize_service_intent(
+    keyword: str,
+    known_cities: list[str],
+    *,
+    aggressive: bool = False,
+) -> str:
     """
     Normalize a keyword to its core intent for semantic dedup.
 
-    Local path (cities provided): strips city names and state abbreviations,
-    sorts remaining words. Intentionally does NOT stem — "house painter" and
-    "painting contractor" are different service intents worth keeping.
+    Local path (cities + aggressive=False): strips city names and state
+    abbreviations, sorts remaining words. Does NOT stem — "house painter"
+    and "painting contractor" stay distinct (this is what the PDF wants).
 
-    Non-local path (no cities): strips stop words, stems, deduplicates words.
-    Much more aggressive because without city variation we need to collapse
-    "project management software" / "project management tools" / etc.
+    Aggressive path (used by aggregate mode): strips cities AND stop words,
+    AND commercial modifiers, AND stems. Collapses "best floor refinishers
+    denver" / "affordable floor refinishing services denver" / "floor
+    refinishing company denver" all to "floor refinish".
+
+    Non-local path: stop-word strip + stem + dedup words.
     """
     kw = keyword.lower()
 
-    if known_cities:
-        # Local: strip city names and state abbreviations
+    if known_cities and not aggressive:
         for city in known_cities:
             kw = kw.replace(city.lower(), "")
         kw = re.sub(r"\b[a-z]{2}\b$", "", kw)  # trailing 2-letter state
         kw = re.sub(r"\bco\b", "", kw)
         kw = re.sub(r"\bin\b", "", kw)
         words = sorted(kw.split())
+    elif known_cities and aggressive:
+        for city in known_cities:
+            kw = kw.replace(city.lower(), "")
+        kw = re.sub(r"\b[a-z]{2}\b$", "", kw)
+        kw = re.sub(r"\bco\b", "", kw)
+        words = kw.split()
+        words = [
+            w for w in words
+            if w not in _STOP_WORDS
+            and w not in _COMMERCIAL_MODIFIERS
+            and len(w) > 1
+        ]
+        words = [_stem_service_word(w) for w in words]
+        words = sorted(set(words))
     else:
-        # Non-local: aggressive normalization
         words = kw.split()
         words = [w for w in words if w not in _STOP_WORDS and len(w) > 1]
         words = [_stem_service_word(w) for w in words]
-        words = sorted(set(words))  # dedup words within the keyword
+        words = sorted(set(words))
 
     return " ".join(words)
 
@@ -468,7 +498,9 @@ def _parse_and_rank(
 
     intent_best: dict = {}
     for kw, vol in filtered:
-        intent = _normalize_service_intent(kw, all_cities)
+        intent = _normalize_service_intent(
+            kw, all_cities, aggressive=(aggregate and profile.is_local)
+        )
         key = (intent, _kw_city_tag(kw)) if aggregate and profile.is_local else intent
         if key not in intent_best or vol > intent_best[key][1]:
             intent_best[key] = (kw, vol)
