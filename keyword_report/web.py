@@ -19,9 +19,11 @@ logger = logging.getLogger("keyword_report.web")
 from .scraper import scrape_site
 from .analyzer import extract_business_info
 from .keywords import (
+    UNIVERSAL_BLOCKLIST,
     get_keywords,
     get_ranked_keywords,
     check_ranking_for_keywords,
+    attach_current_rank,
     build_city_list,
     _extract_domain,
 )
@@ -179,8 +181,9 @@ async def generate_data(url: str):
         domain = _extract_domain(safe_url)
         all_cities = build_city_list(profile)
 
+        # Aggregate mode caps at 10 inside the pipeline (after dedup + diversity).
         keyword_data, ranked_keywords = await asyncio.gather(
-            get_keywords(profile, aggregate=True, limit=100),
+            get_keywords(profile, aggregate=True, limit=10),
             get_ranked_keywords(domain, profile.location),
         )
 
@@ -193,11 +196,27 @@ async def generate_data(url: str):
                 ),
             )
 
-        keyword_results = check_ranking_for_keywords(
+        # Final safety pass: drop anything brand-adjacent that survived
+        # (universal blocklist + profile-specific brand blocklist).
+        combined_blocklist = [b.lower() for b in UNIVERSAL_BLOCKLIST] + [
+            b.lower() for b in profile.brand_blocklist
+        ]
+
+        def _is_brand(text: str) -> bool:
+            t = text.lower()
+            return any(b in t for b in combined_blocklist)
+
+        keyword_data = [kw for kw in keyword_data if not _is_brand(kw.keyword)]
+
+        keyword_results = attach_current_rank(
             keyword_data, ranked_keywords, all_cities
         )
 
-        # Tag each keyword with the city it matched (or "near me" / None).
+        # Sort descending by monthly_searches and hard-cap at 10.
+        keyword_results.sort(key=lambda r: r["monthly_searches"], reverse=True)
+        keyword_results = keyword_results[:10]
+
+        # Tag each keyword with its matched city / "near me" / None.
         cities_lower = [(c, c.lower()) for c in all_cities]
         by_city: dict[str, dict] = {}
         for kw in keyword_results:
@@ -214,17 +233,17 @@ async def generate_data(url: str):
             bucket_key = matched_city or "other"
             bucket = by_city.setdefault(
                 bucket_key,
-                {"city": bucket_key, "keyword_count": 0, "total_impressions": 0},
+                {"city": bucket_key, "keyword_count": 0, "total_monthly_searches": 0},
             )
             bucket["keyword_count"] += 1
-            bucket["total_impressions"] += kw["monthly_searches"]
+            bucket["total_monthly_searches"] += kw["monthly_searches"]
 
         city_breakdown = sorted(
-            by_city.values(), key=lambda b: b["total_impressions"], reverse=True
+            by_city.values(), key=lambda b: b["total_monthly_searches"], reverse=True
         )
 
-        total = sum(kw["monthly_searches"] for kw in keyword_results)
-        old_count = sum(1 for kw in keyword_results if kw["on_old_site"])
+        total_monthly_searches = sum(kw["monthly_searches"] for kw in keyword_results)
+        currently_ranking = sum(1 for kw in keyword_results if kw["current_rank"])
 
         return {
             "request_id": request_id,
@@ -234,11 +253,14 @@ async def generate_data(url: str):
             "keywords": keyword_results,
             "city_breakdown": city_breakdown,
             "totals": {
-                "total_impressions": total,
-                "old_site_keywords": old_count,
-                "new_site_keywords": len(keyword_results),
+                "total_monthly_searches": total_monthly_searches,
+                "returned_keywords": len(keyword_results),
+                "currently_ranking_count": currently_ranking,
                 "ranked_keywords_checked": len(ranked_keywords),
-                "cities_covered": len([b for b in city_breakdown if b["city"] not in ("other", "near me")]),
+                "cities_covered": len([
+                    b for b in city_breakdown
+                    if b["city"] not in (None, "other", "near me")
+                ]),
             },
         }
 

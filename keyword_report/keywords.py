@@ -455,12 +455,23 @@ def _parse_and_rank(
         samples = sorted(deduped, key=lambda x: x[1], reverse=True)[:5]
         logger.info("_parse_and_rank: sample rejected keywords: %s", samples)
 
-    # Step 4: Semantic dedup — keep highest volume for each intent
-    intent_best: dict[str, tuple[str, int]] = {}
+    # Step 4: Semantic dedup — keep highest volume per intent.
+    # In aggregate mode, key by (intent, city) so per-city variants survive
+    # and the consumer can show coverage across the entire service area.
+    def _kw_city_tag(kw: str) -> str:
+        for city in all_cities:
+            if city.lower() in kw:
+                return city.lower()
+        if "near me" in kw or "close to me" in kw:
+            return "__near_me__"
+        return "__generic__"
+
+    intent_best: dict = {}
     for kw, vol in filtered:
         intent = _normalize_service_intent(kw, all_cities)
-        if intent not in intent_best or vol > intent_best[intent][1]:
-            intent_best[intent] = (kw, vol)
+        key = (intent, _kw_city_tag(kw)) if aggregate and profile.is_local else intent
+        if key not in intent_best or vol > intent_best[key][1]:
+            intent_best[key] = (kw, vol)
 
     unique_keywords = list(intent_best.values())
     unique_keywords.sort(key=lambda x: x[1], reverse=True)
@@ -474,9 +485,47 @@ def _parse_and_rank(
             return None
 
         if aggregate:
-            # Aggregate mode: no per-city cap. Take top `limit` by volume
-            # across the entire pool (city keywords + "near me" + generic).
-            final = unique_keywords[:limit]
+            # Aggregate mode selection:
+            #   1. Top 3 "near me" variants (by volume)
+            #   2. Top 1 keyword per service-area city (in city order)
+            #   3. Backfill remaining slots by raw volume
+            #   4. Hard cap at `limit`, then sort desc by volume
+            near_me_pool = [
+                (kw, vol) for kw, vol in unique_keywords
+                if "near me" in kw or "close to me" in kw
+            ]
+            city_pools: dict[str, list[tuple[str, int]]] = {}
+            for kw, vol in unique_keywords:
+                c = _kw_city(kw)
+                if c:
+                    city_pools.setdefault(c, []).append((kw, vol))
+
+            final: list[tuple[str, int]] = []
+            seen: set[str] = set()
+
+            def _add(item):
+                if len(final) >= limit or item[0] in seen:
+                    return
+                final.append(item)
+                seen.add(item[0])
+
+            # 1. Top near-me
+            for item in near_me_pool[:3]:
+                _add(item)
+
+            # 2. Top 1 per city, in declared city order
+            for city in all_cities:
+                pool = city_pools.get(city.lower())
+                if pool:
+                    _add(pool[0])
+
+            # 3. Backfill by raw volume
+            for item in unique_keywords:
+                _add(item)
+
+            # 4. Final sort desc by volume
+            final.sort(key=lambda x: x[1], reverse=True)
+            final = final[:limit]
         else:
             # Split into city-specific and generic pools
             city_keywords = [(kw, vol) for kw, vol in unique_keywords if _kw_city(kw)]
@@ -670,6 +719,45 @@ def _normalize_for_ranking_match(keyword: str, known_cities: list[str]) -> str:
 
     words = sorted(_stem_service_word(w) for w in kw.split() if w)
     return " ".join(words)
+
+
+def attach_current_rank(
+    opportunity_keywords: list[KeywordData],
+    ranked_keywords: list[RankedKeywordData],
+    all_cities: list[str],
+) -> list[dict]:
+    """
+    API-only variant of check_ranking_for_keywords that returns the actual
+    SERP rank position (or None) instead of an on_old_site boolean.
+
+    Match strategy mirrors check_ranking_for_keywords (stemmed intent +
+    exact-string fallback). When multiple ranked keywords match, the best
+    (lowest) rank wins.
+    """
+    # Build {key -> best rank} maps
+    stemmed_rank: dict[str, int] = {}
+    raw_rank: dict[str, int] = {}
+    for rk in ranked_keywords:
+        if not rk.rank_position:
+            continue
+        stem_key = _normalize_for_ranking_match(rk.keyword, all_cities)
+        if stem_key and (stem_key not in stemmed_rank or rk.rank_position < stemmed_rank[stem_key]):
+            stemmed_rank[stem_key] = rk.rank_position
+        raw_key = rk.keyword.lower()
+        if raw_key not in raw_rank or rk.rank_position < raw_rank[raw_key]:
+            raw_rank[raw_key] = rk.rank_position
+
+    results = []
+    for kw in opportunity_keywords:
+        kw_lower = kw.keyword.lower()
+        kw_stemmed = _normalize_for_ranking_match(kw.keyword, all_cities)
+        rank = raw_rank.get(kw_lower) or stemmed_rank.get(kw_stemmed)
+        results.append({
+            "keyword": kw.keyword,
+            "monthly_searches": kw.monthly_searches,
+            "current_rank": rank,  # int or None
+        })
+    return results
 
 
 def check_ranking_for_keywords(
