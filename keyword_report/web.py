@@ -16,7 +16,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 
 logger = logging.getLogger("keyword_report.web")
 
-from .scraper import scrape_site
+from pydantic import BaseModel, Field
+
+from .scraper import scrape_site, ScrapedPage
 from .analyzer import extract_business_info
 from .keywords import (
     UNIVERSAL_BLOCKLIST,
@@ -163,6 +165,97 @@ async def generate(url: str):
     )
 
 
+async def _build_keyword_payload(
+    profile,
+    ranked_keywords: list,
+    *,
+    request_id: str,
+    url: str | None,
+    domain: str | None,
+) -> dict:
+    """Shared keyword pipeline tail used by both URL- and info-based endpoints."""
+    all_cities = build_city_list(profile)
+    keyword_data = await get_keywords(profile, aggregate=True, limit=10)
+
+    if not keyword_data:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No keyword data returned. Seeds: {len(profile.seed_keywords)}, "
+                f"Location: {profile.location}, Cities: {len(all_cities)}"
+            ),
+        )
+
+    combined_blocklist = [b.lower() for b in UNIVERSAL_BLOCKLIST] + [
+        b.lower() for b in profile.brand_blocklist
+    ]
+
+    def _is_brand(text: str) -> bool:
+        t = text.lower()
+        return any(b in t for b in combined_blocklist)
+
+    keyword_data = [kw for kw in keyword_data if not _is_brand(kw.keyword)]
+
+    keyword_results = attach_current_rank(keyword_data, ranked_keywords, all_cities)
+    keyword_results.sort(key=lambda r: r["monthly_searches"], reverse=True)
+    keyword_results = keyword_results[:10]
+
+    cities_lower = [(c, c.lower()) for c in all_cities]
+    by_city: dict[str, dict] = {}
+    for kw in keyword_results:
+        kw_lower = kw["keyword"].lower()
+        matched_city = None
+        for orig, lower in cities_lower:
+            if lower in kw_lower:
+                matched_city = orig
+                break
+        if not matched_city and ("near me" in kw_lower or "close to me" in kw_lower):
+            matched_city = "near me"
+        kw["city"] = matched_city
+
+        bucket_key = matched_city or "other"
+        bucket = by_city.setdefault(
+            bucket_key,
+            {"city": bucket_key, "keyword_count": 0, "total_monthly_searches": 0},
+        )
+        bucket["keyword_count"] += 1
+        bucket["total_monthly_searches"] += kw["monthly_searches"]
+
+    city_breakdown = sorted(
+        by_city.values(), key=lambda b: b["total_monthly_searches"], reverse=True
+    )
+    total_monthly_searches = sum(kw["monthly_searches"] for kw in keyword_results)
+    currently_ranking = sum(1 for kw in keyword_results if kw["current_rank"])
+
+    return {
+        "request_id": request_id,
+        "url": url,
+        "domain": domain,
+        "profile": asdict(profile),
+        "keywords": keyword_results,
+        "city_breakdown": city_breakdown,
+        "totals": {
+            "total_monthly_searches": total_monthly_searches,
+            "returned_keywords": len(keyword_results),
+            "currently_ranking_count": currently_ranking,
+            "ranked_keywords_checked": len(ranked_keywords),
+            "cities_covered": len([
+                b for b in city_breakdown
+                if b["city"] not in (None, "other", "near me")
+            ]),
+        },
+    }
+
+
+class BusinessInfoRequest(BaseModel):
+    business_name: str = Field(..., min_length=1, max_length=200)
+    industry: str = Field(..., min_length=1, max_length=200)
+    location: str = Field("", max_length=200)
+    services: list[str] = Field(default_factory=list, max_length=20)
+    service_area_cities: list[str] = Field(default_factory=list, max_length=30)
+    description: str = Field("", max_length=4000)
+
+
 @app.get("/api/data", dependencies=[Depends(require_api_token)])
 async def generate_data(url: str):
     """Run the keyword research pipeline and return raw JSON (no PDF).
@@ -179,90 +272,11 @@ async def generate_data(url: str):
 
         profile = await asyncio.to_thread(extract_business_info, site.pages)
         domain = _extract_domain(safe_url)
-        all_cities = build_city_list(profile)
-
-        # Aggregate mode caps at 10 inside the pipeline (after dedup + diversity).
-        keyword_data, ranked_keywords = await asyncio.gather(
-            get_keywords(profile, aggregate=True, limit=10),
-            get_ranked_keywords(domain, profile.location),
+        ranked_keywords = await get_ranked_keywords(domain, profile.location)
+        return await _build_keyword_payload(
+            profile, ranked_keywords,
+            request_id=request_id, url=safe_url, domain=domain,
         )
-
-        if not keyword_data:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"No keyword data returned. Seeds: {len(profile.seed_keywords)}, "
-                    f"Location: {profile.location}, Cities: {len(all_cities)}"
-                ),
-            )
-
-        # Final safety pass: drop anything brand-adjacent that survived
-        # (universal blocklist + profile-specific brand blocklist).
-        combined_blocklist = [b.lower() for b in UNIVERSAL_BLOCKLIST] + [
-            b.lower() for b in profile.brand_blocklist
-        ]
-
-        def _is_brand(text: str) -> bool:
-            t = text.lower()
-            return any(b in t for b in combined_blocklist)
-
-        keyword_data = [kw for kw in keyword_data if not _is_brand(kw.keyword)]
-
-        keyword_results = attach_current_rank(
-            keyword_data, ranked_keywords, all_cities
-        )
-
-        # Sort descending by monthly_searches and hard-cap at 10.
-        keyword_results.sort(key=lambda r: r["monthly_searches"], reverse=True)
-        keyword_results = keyword_results[:10]
-
-        # Tag each keyword with its matched city / "near me" / None.
-        cities_lower = [(c, c.lower()) for c in all_cities]
-        by_city: dict[str, dict] = {}
-        for kw in keyword_results:
-            kw_lower = kw["keyword"].lower()
-            matched_city = None
-            for orig, lower in cities_lower:
-                if lower in kw_lower:
-                    matched_city = orig
-                    break
-            if not matched_city and ("near me" in kw_lower or "close to me" in kw_lower):
-                matched_city = "near me"
-            kw["city"] = matched_city
-
-            bucket_key = matched_city or "other"
-            bucket = by_city.setdefault(
-                bucket_key,
-                {"city": bucket_key, "keyword_count": 0, "total_monthly_searches": 0},
-            )
-            bucket["keyword_count"] += 1
-            bucket["total_monthly_searches"] += kw["monthly_searches"]
-
-        city_breakdown = sorted(
-            by_city.values(), key=lambda b: b["total_monthly_searches"], reverse=True
-        )
-
-        total_monthly_searches = sum(kw["monthly_searches"] for kw in keyword_results)
-        currently_ranking = sum(1 for kw in keyword_results if kw["current_rank"])
-
-        return {
-            "request_id": request_id,
-            "url": safe_url,
-            "domain": domain,
-            "profile": asdict(profile),
-            "keywords": keyword_results,
-            "city_breakdown": city_breakdown,
-            "totals": {
-                "total_monthly_searches": total_monthly_searches,
-                "returned_keywords": len(keyword_results),
-                "currently_ranking_count": currently_ranking,
-                "ranked_keywords_checked": len(ranked_keywords),
-                "cities_covered": len([
-                    b for b in city_breakdown
-                    if b["city"] not in (None, "other", "near me")
-                ]),
-            },
-        }
 
     try:
         payload = await asyncio.wait_for(_pipeline(), timeout=DATA_ENDPOINT_TIMEOUT)
@@ -277,6 +291,72 @@ async def generate_data(url: str):
         )
     except Exception as e:
         logger.exception("[%s] /api/data failed for url=%s", request_id, safe_url)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal error (request_id={request_id}): {type(e).__name__}",
+        )
+
+
+@app.post("/api/data", dependencies=[Depends(require_api_token)])
+async def generate_data_from_info(body: BusinessInfoRequest):
+    """No-website variant: build a profile from supplied business info and
+    return generic keyword volumes for the same pipeline. current_rank will
+    be null for every keyword (no domain to query)."""
+    request_id = uuid.uuid4().hex[:12]
+
+    async def _pipeline() -> dict:
+        # Build a synthetic ScrapedPage so we can reuse extract_business_info
+        # (and therefore Haiku-generated seeds, synonyms, relevance terms).
+        synthetic_text = "\n".join(filter(None, [
+            f"Business Name: {body.business_name}",
+            f"Industry: {body.industry}",
+            f"Location: {body.location}" if body.location else "",
+            f"Services: {', '.join(body.services)}" if body.services else "",
+            f"Service Areas: {', '.join(body.service_area_cities)}" if body.service_area_cities else "",
+            f"Description: {body.description}" if body.description else "",
+        ]))
+        page = ScrapedPage(
+            url="about:business-info",
+            title=body.business_name,
+            h1=body.business_name,
+            meta_description=body.industry,
+            text_content=synthetic_text,
+        )
+
+        profile = await asyncio.to_thread(extract_business_info, [page])
+
+        # Caller-supplied fields take precedence over Haiku guesses.
+        if body.location:
+            profile.location = body.location
+        if body.services:
+            profile.services = body.services
+        if body.service_area_cities:
+            # Merge: keep caller's cities first, then any Haiku additions.
+            merged = list(body.service_area_cities)
+            for c in profile.service_area_cities:
+                if c not in merged:
+                    merged.append(c)
+            profile.service_area_cities = merged
+        profile.business_name = body.business_name
+
+        return await _build_keyword_payload(
+            profile, ranked_keywords=[],
+            request_id=request_id, url=None, domain=None,
+        )
+
+    try:
+        payload = await asyncio.wait_for(_pipeline(), timeout=DATA_ENDPOINT_TIMEOUT)
+        return JSONResponse({"ok": True, **payload})
+    except HTTPException:
+        raise
+    except asyncio.TimeoutError:
+        logger.warning("[%s] /api/data POST timed out", request_id)
+        raise HTTPException(
+            status_code=504,
+            detail=f"Pipeline exceeded {DATA_ENDPOINT_TIMEOUT:.0f}s (request_id={request_id}).",
+        )
+    except Exception as e:
+        logger.exception("[%s] /api/data POST failed", request_id)
         raise HTTPException(
             status_code=500,
             detail=f"Internal error (request_id={request_id}): {type(e).__name__}",
