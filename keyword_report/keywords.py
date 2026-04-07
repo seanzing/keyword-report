@@ -305,6 +305,37 @@ async def get_keywords(
     seed_keywords = generate_seed_keywords(profile)
     target_location = _detect_location(profile.location)
 
+    if aggregate:
+        # In aggregate mode, explicitly seed "near me" variants — DataForSEO's
+        # keywords_for_keywords returns variants OF the seeds you give it, so
+        # city-paired seeds will never produce "near me" results on their own.
+        # Build near-me seeds from the user's bare service terms.
+        cities_lower = [c.lower() for c in all_cities]
+
+        def _strip_city(s: str) -> str:
+            out = s.lower()
+            for c in cities_lower:
+                out = out.replace(c, "")
+            return re.sub(r"\s+", " ", out).strip()
+
+        bare_services: list[str] = []
+        for s in profile.seed_keywords:
+            stripped = _strip_city(s)
+            if stripped and stripped not in bare_services:
+                bare_services.append(stripped)
+        for term in profile.relevance_terms:
+            t = term.lower().strip()
+            if t and t not in bare_services and len(t.split()) <= 4:
+                bare_services.append(t)
+
+        near_me_seeds = [f"{s} near me" for s in bare_services[:6]]
+
+        # Reserve up to 6 of the 20 slots for near-me seeds; keep the most
+        # diverse city-paired seeds for the rest.
+        kept = [s for s in seed_keywords if s not in near_me_seeds][: 20 - len(near_me_seeds)]
+        seed_keywords = near_me_seeds + kept
+        logger.info("get_keywords: aggregate mode, near_me_seeds=%s", near_me_seeds)
+
     logger.info(
         "get_keywords: seeds=%d, cities=%d, location=%s, relevance_terms=%d",
         len(seed_keywords), len(all_cities), target_location, len(profile.relevance_terms),
