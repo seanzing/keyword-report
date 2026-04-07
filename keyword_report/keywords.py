@@ -276,12 +276,23 @@ def _is_relevant(keyword: str, profile: BusinessProfile) -> bool:
     return any(term.lower() in kw_lower for term in profile.relevance_terms)
 
 
-async def get_keywords(profile: BusinessProfile) -> list[KeywordData]:
+async def get_keywords(
+    profile: BusinessProfile,
+    *,
+    aggregate: bool = False,
+    limit: int = 10,
+) -> list[KeywordData]:
     """
     Fetch keywords from DataForSEO using profile-driven seeds.
 
     Seeds come from the BusinessProfile. Results are filtered for
     relevance, deduplicated, and (for local businesses) diversified by city.
+
+    Args:
+        aggregate: If True, returns an aggregated pool across all service-area
+            cities with no per-city diversity cap and "near me" variants
+            preserved. Intended for API consumers that want the full picture.
+        limit: Max keywords to return (default 10 matches the PDF report).
     """
     login = os.getenv("DATAFORSEO_LOGIN")
     password = os.getenv("DATAFORSEO_PASSWORD")
@@ -325,13 +336,16 @@ async def get_keywords(profile: BusinessProfile) -> list[KeywordData]:
         response.raise_for_status()
         data = response.json()
 
-    return _parse_and_rank(data, profile, all_cities)
+    return _parse_and_rank(data, profile, all_cities, aggregate=aggregate, limit=limit)
 
 
 def _parse_and_rank(
     response: dict[str, Any],
     profile: BusinessProfile,
     all_cities: list[str],
+    *,
+    aggregate: bool = False,
+    limit: int = 10,
 ) -> list[KeywordData]:
     """
     Parse, filter, deduplicate, and rank results.
@@ -374,7 +388,11 @@ def _parse_and_rank(
             continue
         if profile.is_local:
             has_city = any(city.lower() in kw for city in all_cities)
+            is_near_me = "near me" in kw or "close to me" in kw
             if has_city:
+                local_filtered.append((kw, vol))
+            elif aggregate and is_near_me:
+                # In aggregate mode, "near me" variants ARE valuable local intent
                 local_filtered.append((kw, vol))
             else:
                 no_city_count += 1
@@ -383,15 +401,19 @@ def _parse_and_rank(
             local_filtered.append((kw, vol))
 
     # For local businesses: prefer city-specific keywords, fall back to generic
-    # if fewer than 10 local keywords available
+    # if fewer than `limit` local keywords available
     filtered = local_filtered
-    if profile.is_local and len(local_filtered) < 10 and generic_filtered:
-        # Strip "near me" variants and other non-local noise from fallbacks
-        good_generic = [
-            (kw, vol) for kw, vol in generic_filtered
-            if "near me" not in kw and "close to me" not in kw
-        ]
-        filtered = local_filtered + good_generic
+    if profile.is_local and len(local_filtered) < limit and generic_filtered:
+        if aggregate:
+            # Aggregate mode: keep everything relevant, including "near me"
+            filtered = local_filtered + generic_filtered
+        else:
+            # Strip "near me" variants and other non-local noise from fallbacks
+            good_generic = [
+                (kw, vol) for kw, vol in generic_filtered
+                if "near me" not in kw and "close to me" not in kw
+            ]
+            filtered = local_filtered + good_generic
 
     logger.info(
         "_parse_and_rank: deduped=%d, blocked=%d, irrelevant=%d, no_city=%d, local=%d, generic_fallback=%d",
@@ -420,65 +442,73 @@ def _parse_and_rank(
                     return city.lower()
             return None
 
-        # Split into city-specific and generic pools
-        city_keywords = [(kw, vol) for kw, vol in unique_keywords if _kw_city(kw)]
-        generic_keywords = [(kw, vol) for kw, vol in unique_keywords if not _kw_city(kw)]
+        if aggregate:
+            # Aggregate mode: no per-city cap. Take top `limit` by volume
+            # across the entire pool (city keywords + "near me" + generic).
+            final = unique_keywords[:limit]
+        else:
+            # Split into city-specific and generic pools
+            city_keywords = [(kw, vol) for kw, vol in unique_keywords if _kw_city(kw)]
+            generic_keywords = [(kw, vol) for kw, vol in unique_keywords if not _kw_city(kw)]
 
-        # First pass: city-specific keywords with diversity cap
-        final: list[tuple[str, int]] = []
-        city_count: dict[str, int] = {}
-        max_per_city = 3
+            # First pass: city-specific keywords with diversity cap
+            final: list[tuple[str, int]] = []
+            city_count: dict[str, int] = {}
+            max_per_city = 3
 
-        for kw, vol in city_keywords:
-            if len(final) >= 10:
-                break
-            kw_c = _kw_city(kw)
-            count = city_count.get(kw_c, 0)
-            if count >= max_per_city:
-                continue
-            city_count[kw_c] = count + 1
-            final.append((kw, vol))
-
-        # Backfill with generic keywords if we don't have enough
-        if len(final) < 10:
-            for kw, vol in generic_keywords:
-                if len(final) >= 10:
+            for kw, vol in city_keywords:
+                if len(final) >= limit:
                     break
+                kw_c = _kw_city(kw)
+                count = city_count.get(kw_c, 0)
+                if count >= max_per_city:
+                    continue
+                city_count[kw_c] = count + 1
                 final.append((kw, vol))
 
-        # Last resort: add back skipped city keywords
-        if len(final) < 10:
-            used = {kw for kw, _ in final}
-            for kw, vol in city_keywords:
-                if len(final) >= 10:
-                    break
-                if kw not in used:
+            # Backfill with generic keywords if we don't have enough
+            if len(final) < limit:
+                for kw, vol in generic_keywords:
+                    if len(final) >= limit:
+                        break
                     final.append((kw, vol))
+
+            # Last resort: add back skipped city keywords
+            if len(final) < limit:
+                used = {kw for kw, _ in final}
+                for kw, vol in city_keywords:
+                    if len(final) >= limit:
+                        break
+                    if kw not in used:
+                        final.append((kw, vol))
     else:
-        # Non-local: diversity cap by core intent — don't let one topic dominate
-        final: list[tuple[str, int]] = []
-        core_count: dict[str, int] = {}
-        max_per_core = 2  # No more than 2 keywords per core bigram
+        if aggregate:
+            final = unique_keywords[:limit]
+        else:
+            # Non-local: diversity cap by core intent — don't let one topic dominate
+            final: list[tuple[str, int]] = []
+            core_count: dict[str, int] = {}
+            max_per_core = 2  # No more than 2 keywords per core bigram
 
-        for kw, vol in unique_keywords:
-            if len(final) >= 10:
-                break
-            intent = _normalize_service_intent(kw, [])
-            core = _core_intent(intent)
-            count = core_count.get(core, 0)
-            if count >= max_per_core:
-                continue
-            core_count[core] = count + 1
-            final.append((kw, vol))
-
-        # Backfill if we still need more
-        if len(final) < 10:
-            used = {kw for kw, _ in final}
             for kw, vol in unique_keywords:
-                if len(final) >= 10:
+                if len(final) >= limit:
                     break
-                if kw not in used:
-                    final.append((kw, vol))
+                intent = _normalize_service_intent(kw, [])
+                core = _core_intent(intent)
+                count = core_count.get(core, 0)
+                if count >= max_per_core:
+                    continue
+                core_count[core] = count + 1
+                final.append((kw, vol))
+
+            # Backfill if we still need more
+            if len(final) < limit:
+                used = {kw for kw, _ in final}
+                for kw, vol in unique_keywords:
+                    if len(final) >= limit:
+                        break
+                    if kw not in used:
+                        final.append((kw, vol))
 
     return [KeywordData(keyword=kw, monthly_searches=vol) for kw, vol in final]
 

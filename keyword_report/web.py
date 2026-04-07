@@ -180,7 +180,7 @@ async def generate_data(url: str):
         all_cities = build_city_list(profile)
 
         keyword_data, ranked_keywords = await asyncio.gather(
-            get_keywords(profile),
+            get_keywords(profile, aggregate=True, limit=100),
             get_ranked_keywords(domain, profile.location),
         )
 
@@ -196,6 +196,33 @@ async def generate_data(url: str):
         keyword_results = check_ranking_for_keywords(
             keyword_data, ranked_keywords, all_cities
         )
+
+        # Tag each keyword with the city it matched (or "near me" / None).
+        cities_lower = [(c, c.lower()) for c in all_cities]
+        by_city: dict[str, dict] = {}
+        for kw in keyword_results:
+            kw_lower = kw["keyword"].lower()
+            matched_city = None
+            for orig, lower in cities_lower:
+                if lower in kw_lower:
+                    matched_city = orig
+                    break
+            if not matched_city and ("near me" in kw_lower or "close to me" in kw_lower):
+                matched_city = "near me"
+            kw["city"] = matched_city
+
+            bucket_key = matched_city or "other"
+            bucket = by_city.setdefault(
+                bucket_key,
+                {"city": bucket_key, "keyword_count": 0, "total_impressions": 0},
+            )
+            bucket["keyword_count"] += 1
+            bucket["total_impressions"] += kw["monthly_searches"]
+
+        city_breakdown = sorted(
+            by_city.values(), key=lambda b: b["total_impressions"], reverse=True
+        )
+
         total = sum(kw["monthly_searches"] for kw in keyword_results)
         old_count = sum(1 for kw in keyword_results if kw["on_old_site"])
 
@@ -205,11 +232,13 @@ async def generate_data(url: str):
             "domain": domain,
             "profile": asdict(profile),
             "keywords": keyword_results,
+            "city_breakdown": city_breakdown,
             "totals": {
                 "total_impressions": total,
                 "old_site_keywords": old_count,
                 "new_site_keywords": len(keyword_results),
                 "ranked_keywords_checked": len(ranked_keywords),
+                "cities_covered": len([b for b in city_breakdown if b["city"] not in ("other", "near me")]),
             },
         }
 
