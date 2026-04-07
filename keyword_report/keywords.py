@@ -233,11 +233,41 @@ _COMMERCIAL_MODIFIERS = {
 }
 
 
+def _min_stem(word: str) -> str:
+    """Stem a word and strip trailing 'e' so 'reglaze' and 'reglazing' both
+    reduce to 'reglaz'. Length-protected to avoid mangling short words."""
+    s = _stem_service_word(word)
+    if len(s) > 4 and s.endswith("e"):
+        s = s[:-1]
+    return s
+
+
+def _build_synonym_map(synonym_groups: list[list[str]]) -> dict[str, str]:
+    """Flatten synonym groups into a {word -> canonical} map.
+
+    Stores raw, stemmed, and min-stemmed forms so asymmetric inflections
+    ('reglaze' base form vs 'reglazing' which stems to 'reglaz') still hit.
+    """
+    smap: dict[str, str] = {}
+    for group in synonym_groups or []:
+        if not group:
+            continue
+        canonical = _min_stem(group[0].lower())
+        for word in group:
+            w = word.lower().strip()
+            if not w:
+                continue
+            for variant in (w, _stem_service_word(w), _min_stem(w)):
+                smap[variant] = canonical
+    return smap
+
+
 def _normalize_service_intent(
     keyword: str,
     known_cities: list[str],
     *,
     aggressive: bool = False,
+    synonym_map: dict[str, str] | None = None,
 ) -> str:
     """
     Normalize a keyword to its core intent for semantic dedup.
@@ -274,7 +304,9 @@ def _normalize_service_intent(
             and w not in _COMMERCIAL_MODIFIERS
             and len(w) > 1
         ]
-        words = [_stem_service_word(w) for w in words]
+        words = [_min_stem(w) for w in words]
+        if synonym_map:
+            words = [synonym_map.get(w, w) for w in words]
         words = sorted(set(words))
     else:
         words = kw.split()
@@ -496,10 +528,13 @@ def _parse_and_rank(
             return "__near_me__"
         return "__generic__"
 
+    synonym_map = _build_synonym_map(profile.service_synonyms) if aggregate else None
     intent_best: dict = {}
     for kw, vol in filtered:
         intent = _normalize_service_intent(
-            kw, all_cities, aggressive=(aggregate and profile.is_local)
+            kw, all_cities,
+            aggressive=(aggregate and profile.is_local),
+            synonym_map=synonym_map,
         )
         key = (intent, _kw_city_tag(kw)) if aggregate and profile.is_local else intent
         if key not in intent_best or vol > intent_best[key][1]:

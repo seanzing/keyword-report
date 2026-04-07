@@ -74,6 +74,7 @@ def extract_business_info(pages: list[ScrapedPage]) -> BusinessProfile:
             '  "seed_keywords": ["keyword1", "keyword2", ...],\n'
             '  "relevance_terms": ["term1", "term2", ...],\n'
             '  "brand_blocklist": ["competitor1", "aggregator1", ...],\n'
+            '  "service_synonyms": [["refinish","reglaze","resurface","refurbish","restore"], ["tub","bathtub","bath"]],\n'
             '  "report_headline": "...",\n'
             '  "report_value_prop": "...",\n'
             '  "report_cta_text": "..."\n'
@@ -107,6 +108,14 @@ def extract_business_info(pages: list[ScrapedPage]) -> BusinessProfile:
             "'professional service'. Think: what single word in a keyword tells you it's relevant to this business?\n\n"
             "BRAND_BLOCKLIST: List competitor brand names, aggregator sites (Yelp, Angi, etc.), and major "
             "retailers/platforms that should be filtered out of keyword results. 5-15 entries.\n\n"
+            "SERVICE_SYNONYMS: Groups of words that mean the SAME THING for THIS specific business, "
+            "so that semantically identical keywords can be clustered. Each inner list is one synonym "
+            "group — the first word will be the canonical form. Think carefully about the industry: "
+            "for a bathtub refinisher, 'refinish', 'reglaze', 'resurface', 'refurbish', and 'restore' "
+            "are all the same service. For a plumber, 'unclog' and 'clear' might group with 'drain'. "
+            "For a lawyer, 'attorney' and 'lawyer' are the same. Include the singular/stem form in each "
+            "group (e.g. 'refinish' covers 'refinishing', 'refinishers' via stemming). 2-6 groups is "
+            "typical; return an empty list if no meaningful synonyms exist for this business.\n\n"
             "REPORT_HEADLINE: A short headline for the PDF report (e.g. 'Local SEO Opportunity Report', "
             "'E-Commerce Keyword Opportunity Report', 'Search Visibility Report').\n\n"
             "REPORT_VALUE_PROP: 1-2 sentences explaining the value proposition for this business type. "
@@ -146,6 +155,7 @@ def extract_business_info(pages: list[ScrapedPage]) -> BusinessProfile:
         seed_keywords=result.get("seed_keywords", []),
         relevance_terms=result.get("relevance_terms", []),
         brand_blocklist=result.get("brand_blocklist", []),
+        service_synonyms=result.get("service_synonyms", []),
         report_headline=result.get("report_headline", "SEO Opportunity Report"),
         report_value_prop=result.get("report_value_prop", ""),
         report_cta_text=result.get("report_cta_text", ""),
